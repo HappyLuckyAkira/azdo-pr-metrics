@@ -76,7 +76,8 @@ pr-metrics/
 │   └─ Output.ps1              … CSV/JSON 出力・画面表示
 ├─ tests/Run-Tests.ps1         … 単体テスト（接続不要）
 ├─ docs/                       … 設計資料
-└─ .github/copilot-instructions.md … GitHub Copilot 向けの作業ルール
+├─ AGENTS.md                   … AI コーディングエージェント向けの作業ルール（正）
+└─ .github/copilot-instructions.md … GitHub Copilot 向けの作業ルール（AGENTS.md の要約）
 ```
 
 ## 設計資料
