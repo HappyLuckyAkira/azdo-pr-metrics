@@ -5,9 +5,9 @@
 ## 1. 準備
 
 1. VS Code で `pr-metrics` フォルダを開く（**フォルダごと**開くと、Copilot が資料とコードを参照できる）。
-2. `.github/copilot-instructions.md` が自動で読み込まれる（Copilot Chat の回答の参照元に表示される）。
-   - このファイルに「5.1 互換」「PAT を出さない」「BOM を消さない」などのルールが書いてあるので、毎回プロンプトで説明する必要はない。
-   - 読み込まれない場合は、VS Code の設定で `github.copilot.chat.codeGeneration.useInstructionFiles` が有効か確認する。
+2. リポジトリ直下の `AGENTS.md` が自動で読み込まれる（Copilot Chat の回答の参照元に表示される）。
+   - このファイルに「5.1 互換」「PAT を出さない」「BOM を消さない」「公開リポジトリなので実名を書かない」などのルールが書いてあるので、毎回プロンプトで説明する必要はない。
+   - 読み込まれない場合は、VS Code の設定で `chat.useAgentsMdFile` が有効か確認する。古い VS Code では対応していないことがあるので、そのときはプロンプトに `#file:AGENTS.md` を添付する。
 3. 質問するときは、`#file` で関係するファイルを添付すると精度が上がる。
    例: `#file:src/SizeCalculator.ps1 #file:docs/05_詳細設計.md`
 4. 修正を頼むときは **Agent モード**（または Edits）を使うと、複数ファイルをまとめて変更してくれる。
@@ -99,7 +99,7 @@ SaveRawJson=$true で取得した PR 1 件分の JSON を貼ります（個人�
 
 ```
 案 <番号> で実装してください。
-.github/copilot-instructions.md のルールに従い、設定項目・資料・テストも更新してください。
+AGENTS.md のルールに従い、設定項目・資料・テストも更新してください。
 ```
 
 ### 3.6 設定を変える
@@ -163,7 +163,7 @@ Copilot に渡す前に、次の 2 つを行っておくと調査が速くなり
 ### 4.2 基本テンプレート（どの不具合にも使える）
 
 ```
-#file:.github/copilot-instructions.md #file:docs/02_基本設計.md #file:docs/08_トラブルシューティング.md
+#file:AGENTS.md #file:docs/02_基本設計.md #file:docs/08_トラブルシューティング.md
 不具合を調査したいです。まだコードは修正しないでください。
 
 ## 実行したこと
@@ -263,7 +263,7 @@ debug.log を貼ります。API 呼び出し回数と git コマンドの回数�
 1. まず、この不具合を再現する（今は失敗する）テストを tests/Run-Tests.ps1 に追加してください。
    実データは使わず、架空の値で作ってください。
 2. テストが失敗することを私が確認したら、修正してください。
-3. 修正は .github/copilot-instructions.md のルールに従い、関係する docs も更新してください。
+3. 修正は AGENTS.md のルールに従い、関係する docs も更新してください。
 ```
 
 修正後は、Copilot の「直りました」を鵜呑みにせず、**自分で両方のバージョンで**確認します。

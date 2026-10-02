@@ -4,7 +4,6 @@ AI コーディングエージェント（GitHub Copilot / Codex / Claude Code �
 人向けの説明は [README.md](README.md) と [docs/](docs/) にあります。
 
 - 回答・コードコメント・コミットメッセージ・資料は**日本語**で書く。
-- このファイルと `.github/copilot-instructions.md` が食い違う場合は、**このファイルが正**。
 
 ## プロジェクト概要
 
@@ -52,6 +51,13 @@ Get-ChildItem -Recurse -Include *.ps1,*.psd1 | ForEach-Object { '{0} {1}' -f ((G
 | `docs/01〜09` | 要件・設計・API・設定・出力・確認手順・トラブル・Copilot ガイド | — |
 
 `src/*.ps1` はモジュールではなく、エントリポイントとテストから **dot-source** で読み込む。新しいファイルを追加したら、`Invoke-PrMetrics.ps1` と `tests/Run-Tests.ps1` の読み込みリストの両方に追加する。
+
+## 用語と定義
+
+- **指標の定義は `docs/01_要件定義.md` の 3 章が正。** 計算方法を変えるときは、先にそこを更新する。
+- 「PR の変更」＝ `lastMergeTargetCommit` → `lastMergeCommit` の差分（`docs/05_詳細設計.md` 4.1）。マージ先で並行して進んだ変更は含めない。
+- 日時は API では UTC。表示と期間判定は、設定の `TimeZoneId`（既定: `Tokyo Standard Time`）で行う。期間の終端は含まない（`ToLocalExclusive`）。
+- 基準日（`DateBasis`）: `Closed`＝完了日時、`Created`＝作成日時。
 
 ## コーディング規約
 
@@ -112,7 +118,7 @@ PowerShell 7 だけでテストして済ませない。**必ず `powershell`（5
 | サイズ計算の方式（`SizeSource`）の追加 | `docs/05_詳細設計.md` 4.1、`docs/06_出力仕様.md` の SizeSource 表 |
 | 新しいエラー・その対処 | `docs/08_トラブルシューティング.md` |
 | 引数の追加 | `Invoke-PrMetrics.ps1` のコメントヘルプ、`docs/04` 3 章、`docs/05` 1 章 |
-| ファイル構成の変更 | `README.md`、このファイルの「構成」、`.github/copilot-instructions.md` |
+| ファイル構成の変更 | `README.md`、このファイルの「構成」 |
 
 ## テストの書き方
 
