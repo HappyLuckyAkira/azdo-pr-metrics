@@ -21,8 +21,8 @@
     ↓ 期待結果と違う
 [08 トラブルシューティング] で該当するエラーを探す
     ↓ 解決しない
-Copilot に「状況・エラー全文・関係ファイル」を渡して相談（下のプロンプト例）
-    ↓ 修正
+Copilot に「状況・エラー全文・関係ファイル」を渡して相談（4 章 不具合調査のプロンプト集）
+    ↓ 原因が分かったら、再現テストを書かせてから修正
 tests/Run-Tests.ps1 を実行してすべて成功を確認 → 同じ Step をやり直す
 ```
 
@@ -37,6 +37,8 @@ tests/Run-Tests.ps1 を実行してすべて成功を確認 → 同じ Step を�
 ```
 
 ### 3.2 エラーの調査
+
+接続確認でのエラーなど、手軽に聞く場合の例です。本格的な調査は [4 章](#4-不具合調査のプロンプト集) を使ってください。
 
 ```
 #file:docs/08_トラブルシューティング.md #file:src/AzDoClient.ps1
@@ -135,7 +137,151 @@ SaveRawJson=$true で取得した PR 1 件分の JSON を貼ります（個人�
 - エラー時に PR 1 件の失敗で全体が止まらないか
 ```
 
-## 4. Copilot の回答で注意すること
+## 4. 不具合調査のプロンプト集
+
+不具合の調査では、Copilot に**いきなり修正させない**のが基本です。次の順で進めます。
+
+```
+事実を渡す → 原因の候補を出させる → 自分で確認する → 再現テストを書かせる → 修正させる → 自分でテストする
+```
+
+### 4.1 前準備（材料をそろえる）
+
+Copilot に渡す前に、次の 2 つを行っておくと調査が速くなります。
+
+```powershell
+# 1) 詳細ログ付きで再実行し、出力をファイルに保存（API の URL と git コマンドが記録される。PAT は出ない）
+.\Invoke-PrMetrics.ps1 -ConfigPath .\config\settings.local.psd1 -Verbose *> .\debug.log
+
+# 2) settings.local.psd1 で SaveRawJson = $true にして実行（API の生データを保存）
+```
+
+生データがあれば、`-ReplayDir` で **API を呼ばずに同じ状況を何度でも再現**できます。
+
+> `debug.log` と `raw_pullrequests_*.json` には社内情報（組織名・PR タイトル・作成者名）が含まれます。どちらも `.gitignore` の対象（`*.log` と `output/`）なのでコミットされませんが、Copilot に貼るときは伏せ字にしてください。
+
+### 4.2 基本テンプレート（どの不具合にも使える）
+
+```
+#file:.github/copilot-instructions.md #file:docs/02_基本設計.md #file:docs/08_トラブルシューティング.md
+不具合を調査したいです。まだコードは修正しないでください。
+
+## 実行したこと
+<実行したコマンド>
+
+## 期待した結果
+<例: 9月に完了した PR が 42 件出力される>
+
+## 実際の結果
+<例: 38 件しか出力されない / エラーになる>
+<エラーや出力の全文を貼る。PAT・個人名・社内の組織名は伏せる>
+
+## 環境
+- PowerShell: <$PSVersionTable.PSVersion の結果>
+- git: <git --version の結果>
+- 設定の変更点: <既定値から変えた設定項目>
+
+## お願い
+1. 考えられる原因を、可能性の高い順に 3〜5 個挙げてください
+2. それぞれについて「どのファイルのどの関数が関係するか」と
+   「原因かどうかを確かめるために私が実行するコマンド」を示してください
+3. 推測と、コードから確実に言えることを区別して書いてください
+```
+
+最後の「推測と確実なことを区別して」と「確かめるコマンドを示して」が重要です。これが無いと、Copilot がもっともらしい推測で修正を始めてしまいがちです。
+
+### 4.3 症状別
+
+#### A. エラーで止まる
+
+```
+#file:src/AzDoClient.ps1 #file:docs/03_AzureDevOps_API仕様.md #file:docs/08_トラブルシューティング.md
+次のエラーで止まります。-Verbose の出力も貼ります。
+エラーメッセージの「ヒント」の内容が当てはまるか、
+08 のエラー一覧のどれに該当するかを判断し、確認手順を示してください。
+コードの不具合なのか、環境・設定の問題なのかも判断してください。
+
+<debug.log の該当部分>
+```
+
+#### B. 件数が Azure DevOps の画面と合わない
+
+```
+#file:src/Aggregator.ps1 #file:src/AzDoClient.ps1 #file:docs/01_要件定義.md
+PR の件数が Azure DevOps の画面と合いません。
+- 画面の件数: <N> 件（<Completed タブ / 期間の数え方>）
+- ツールの件数: <M> 件
+- run_info.json の Fetched / Included: <値>
+- 画面にあってツールに無い PR の例: #<番号>（完了日時: <画面の表示>）
+
+その PR が除外された理由を特定したいです。
+Test-PullRequestIncluded の判定条件を 1 つずつ確認する PowerShell のコードを書いてください。
+raw_pullrequests_*.json からその PR を読み込んで、どの条件で false になるか表示するものにしてください。
+```
+
+#### C. サイズが unavailable になる / 行数がおかしい
+
+```
+#file:src/SizeCalculator.ps1 #file:docs/05_詳細設計.md
+PR #<番号> のサイズが <unavailable になる / 実際と違う> という問題があります。
+- prs.csv の該当行: SizeSource=<値>, SizeNote=<値>, LinesAdded=<値>, LinesDeleted=<値>
+- PR 画面での実際の変更: <例: 3 ファイル、+120 -30 くらい>
+- MergeStrategy: <squash など>
+- raw JSON の lastMergeTargetCommit / lastMergeSourceCommit / lastMergeCommit:
+  <SHA の先頭 8 桁>
+
+05 の 4.1 のアルゴリズムに沿って、どの段階で想定と違っているのかを確かめたいです。
+repos\<リポジトリ名> で私が実行する git コマンドを、順番に、それぞれ何を確かめるのかの説明付きで示してください。
+```
+
+#### D. 文字化けする
+
+```
+#file:src/Output.ps1 #file:src/AzDoClient.ps1 #file:src/SizeCalculator.ps1
+<どこで: 画面 / prs.csv / 設定ファイル読み込み> で日本語が文字化けします。
+<化けた例を貼る>
+PowerShell <5.1 / 7> で実行しています。
+API の応答のデコード、git の出力エンコーディング、CSV 出力、ファイルの BOM の
+どこが原因か切り分ける手順を示してください。
+```
+
+#### E. 遅い
+
+```
+#file:Invoke-PrMetrics.ps1 #file:src/AzDoClient.ps1 #file:src/SizeCalculator.ps1
+PR <N> 件の処理に <M> 分かかります（SizeMethod=<値>）。
+debug.log を貼ります。API 呼び出し回数と git コマンドの回数を数えて、
+どこに時間がかかっているか推定してください。
+改善案は、設定変更で済むものとコード修正が必要なものに分けてください。
+```
+
+### 4.4 原因が分かったら：再現テスト → 修正
+
+```
+#file:tests/Run-Tests.ps1 #file:src/<原因のファイル>.ps1
+原因は <特定した原因> でした。
+1. まず、この不具合を再現する（今は失敗する）テストを tests/Run-Tests.ps1 に追加してください。
+   実データは使わず、架空の値で作ってください。
+2. テストが失敗することを私が確認したら、修正してください。
+3. 修正は .github/copilot-instructions.md のルールに従い、関係する docs も更新してください。
+```
+
+修正後は、Copilot の「直りました」を鵜呑みにせず、**自分で両方のバージョンで**確認します。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
+pwsh -NoProfile -File .\tests\Run-Tests.ps1
+# 実データでも確認（API を呼ばずに再現）
+.\Invoke-PrMetrics.ps1 -ConfigPath .\config\settings.local.psd1 -ReplayDir .\output\<前回の実行フォルダ>
+```
+
+### 4.5 調査時の注意
+
+- 社内向けの Copilot（Business / Enterprise）であっても、**PAT は絶対に貼らない**。作成者名・メールアドレス・社内の組織名は `<伏せ字>` にする。
+- `#file:` で添付するのは関係するファイルに絞る（全部添付すると回答がぼやける）。
+- 1 回の会話で解決しないときは、分かった事実を箇条書きにまとめて**新しい会話**で続ける（長い会話は前提を取り違えやすい）。
+
+## 5. Copilot の回答で注意すること
 
 | よくある誤り | 見分け方 / 対処 |
 |---|---|
