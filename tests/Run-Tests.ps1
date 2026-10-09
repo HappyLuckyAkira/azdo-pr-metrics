@@ -351,6 +351,16 @@ It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示す
     Assert-Contains $html '<svg '
 }
 
+It 'HTML: 週の始まりの曜日名が設定どおりに日本語で出る（既定は月曜日）' {
+    $d = New-LeadTimeTestData
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 月曜日'
+
+    $d.Config.WeekStartDay = 'Sunday'
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 日曜日'
+}
+
 It 'グラフは DateBasis=Closed のときだけ作る' {
     Assert-Equal $true (Test-LeadTimeChartEnabled -Config (New-TestConfig))
     Assert-Equal $false (Test-LeadTimeChartEnabled -Config (New-TestConfig @{ DateBasis = 'Created' }))

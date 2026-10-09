@@ -216,7 +216,10 @@ function New-LeadTimeChartHtml {
     $culture = [Globalization.CultureInfo]::InvariantCulture
     $rows = @($Summary | Where-Object { $null -ne $_ })
     $repositories = @($rows | ForEach-Object { $_.Repository } | Select-Object -Unique)
-    $weekStartName = (New-Object Globalization.CultureInfo 'ja-JP').DateTimeFormat.GetDayName([DayOfWeek]$Config.WeekStartDay)
+    # 曜日名は固定の配列から引く（ja-JP カルチャに依存すると、PowerShell 7 の
+    # invariant-globalization モードなどでカルチャが使えず日本語にならないため）
+    $dayNames = @('日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日')
+    $weekStartName = $dayNames[[int][DayOfWeek]$Config.WeekStartDay]
     $fromText = $Range.FromLocal.ToString('yyyy-MM-dd', $culture)
     $toText = $Range.ToLocalExclusive.AddDays(-1).ToString('yyyy-MM-dd', $culture)
 
