@@ -24,3 +24,67 @@ function Get-LeadTimeBucket {
     if ($Hours -lt 72) { return 'From24To72h' }
     return 'Over72h'
 }
+
+function Get-LeadTimeWeeklySummary {
+    <#
+    .SYNOPSIS
+        マージ済み PR を完了週 × クローズまでの時間の区分で数える。
+    .DESCRIPTION
+        ・対象は Status='completed' かつ完了日時(ClosedAt)とリードタイムがある明細だけ
+        ・週は ClosedAt（設定タイムゾーン）が属する週。週の始まりは WeekStartDay
+        ・範囲内のすべての週を出力する（0 件の週も行を出す）
+        ・範囲の端で切れた週は Days < 7、IsPartial = $true
+        列の定義: docs\06_出力仕様.md「summary_leadtime_weekly.csv」
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Records = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)]$Range
+    )
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $weekStarts = @(Get-PeriodStarts -Range $Range -Unit 'Week' -WeekStartDay $Config.WeekStartDay)
+    $rangeLastDay = $Range.ToLocalExclusive.AddDays(-1)
+    $targets = @($Records | Where-Object {
+            $null -ne $_ -and $_.Status -eq 'completed' -and $null -ne $_.LeadTimeHours -and $_.ClosedAt
+        })
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($group in (Get-RecordGroups -Records $targets -Repositories $Config.Repositories)) {
+        # 週の開始日(yyyy-MM-dd) → 区分ごとの件数
+        $counts = @{}
+        foreach ($record in $group.Records) {
+            $closedLocal = [datetime]::ParseExact([string]$record.ClosedAt, 'yyyy-MM-dd HH:mm', $culture)
+            $key = (Get-PeriodStart -LocalDate $closedLocal -Unit 'Week' -WeekStartDay $Config.WeekStartDay).ToString('yyyy-MM-dd', $culture)
+            if (-not $counts.ContainsKey($key)) { $counts[$key] = @{ Under24h = 0; From24To72h = 0; Over72h = 0 } }
+            $bucket = Get-LeadTimeBucket -Hours ([double]$record.LeadTimeHours)
+            $counts[$key][$bucket] = $counts[$key][$bucket] + 1
+        }
+
+        foreach ($start in $weekStarts) {
+            $firstDay = $start
+            if ($Range.FromLocal -gt $firstDay) { $firstDay = $Range.FromLocal }
+            $lastDay = $start.AddDays(6)
+            if ($lastDay -gt $rangeLastDay) { $lastDay = $rangeLastDay }
+            $days = [int]($lastDay - $firstDay).TotalDays + 1
+
+            $key = $start.ToString('yyyy-MM-dd', $culture)
+            $count = @{ Under24h = 0; From24To72h = 0; Over72h = 0 }
+            if ($counts.ContainsKey($key)) { $count = $counts[$key] }
+
+            $rows.Add([pscustomobject][ordered]@{
+                    Repository  = $group.Name
+                    WeekStart   = $key
+                    WeekEnd     = $lastDay.ToString('yyyy-MM-dd', $culture)
+                    Days        = $days
+                    IsPartial   = ($days -lt 7)
+                    Under24h    = [int]$count.Under24h
+                    From24To72h = [int]$count.From24To72h
+                    Over72h     = [int]$count.Over72h
+                    Total       = [int]($count.Under24h + $count.From24To72h + $count.Over72h)
+                })
+        }
+    }
+    return $rows.ToArray()
+}

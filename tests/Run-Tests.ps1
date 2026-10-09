@@ -205,6 +205,88 @@ It 'クローズまでの時間の区分: 境界ちょうどは上側の区分' 
     Assert-Equal 'Over72h' (Get-LeadTimeBucket -Hours 500)
 }
 
+function New-LeadTimeRecord {
+    # 完了日時(UTC 文字列)とクローズまでの時間(時間)から明細レコードを作る
+    param([int]$Id, [string]$ClosedUtc, [double]$Hours, [string]$Repo = 'RepoA', [string]$Status = 'completed')
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $closed = [datetime]::Parse($ClosedUtc, $culture, [Globalization.DateTimeStyles]'AssumeUniversal,AdjustToUniversal')
+    $created = $closed.AddHours(-$Hours).ToString('yyyy-MM-ddTHH:mm:ssZ', $culture)
+    $rec = ConvertTo-PrRecord -PullRequest (New-FakePr $Id $created $ClosedUtc) -Repository $Repo -Size (New-PrSizeResult) `
+        -Config (New-TestConfig) -TimeZone $tokyo -WebBaseUrl 'x'
+    $rec.Status = $Status
+    return $rec
+}
+
+function New-LeadTimeTestData {
+    # 範囲 2026-09-03(木)〜09-30(水)。週(月曜始まり): 8/31(4日分), 9/7, 9/14, 9/21, 9/28(3日分)
+    $config = New-TestConfig @{ FromDate = '2026-09-03'; ToDate = '2026-09-30' }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $active = ConvertTo-PrRecord -PullRequest (New-FakePr 6 '2026-09-10T00:00:00Z' '') -Repository 'RepoA' -Size (New-PrSizeResult) `
+        -Config $config -TimeZone $tokyo -WebBaseUrl 'x'
+    $active.Status = 'active'
+    $records = @(
+        New-LeadTimeRecord 1 '2026-09-03T01:00:00Z' 5      # 8/31 の週・24時間未満
+        New-LeadTimeRecord 2 '2026-09-04T00:00:00Z' 30     # 8/31 の週・24〜72時間
+        New-LeadTimeRecord 3 '2026-09-15T00:00:00Z' 100    # 9/14 の週・72時間以上
+        New-LeadTimeRecord 4 '2026-09-15T00:00:00Z' 5 -Status 'abandoned'   # 数えない
+        New-LeadTimeRecord 5 '2026-09-29T00:00:00Z' 72     # 9/28 の週・72時間以上（境界）
+        $active                                            # 完了日時なし → 数えない
+    )
+    return @{ Config = $config; Range = $range; Records = $records }
+}
+
+It '週次集計: マージ済みだけ数え、0 件の週と端の週の日数を出す' {
+    $d = New-LeadTimeTestData
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Equal 5 $rows.Count
+    Assert-Equal 'RepoA' $rows[0].Repository
+    Assert-Equal '2026-08-31' $rows[0].WeekStart
+    Assert-Equal '2026-09-06' $rows[0].WeekEnd
+    Assert-Equal 4 $rows[0].Days
+    Assert-Equal $true $rows[0].IsPartial
+    Assert-Equal 1 $rows[0].Under24h
+    Assert-Equal 1 $rows[0].From24To72h
+    Assert-Equal 0 $rows[0].Over72h
+    Assert-Equal 2 $rows[0].Total
+    Assert-Equal '2026-09-13' $rows[1].WeekEnd
+    Assert-Equal 7 $rows[1].Days
+    Assert-Equal $false $rows[1].IsPartial
+    Assert-Equal 0 $rows[1].Total
+    Assert-Equal 0 $rows[2].Under24h '（abandoned は数えない）'
+    Assert-Equal 1 $rows[2].Over72h
+    Assert-Equal '2026-09-30' $rows[4].WeekEnd
+    Assert-Equal 3 $rows[4].Days
+    Assert-Equal 1 $rows[4].Over72h
+}
+It '週次集計: 日曜 23:30(日本時間)完了はその週、月曜 00:30 は翌週' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-20' }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(
+        New-LeadTimeRecord 1 '2026-09-13T14:30:00Z' 1   # 9/13(日) 23:30 JST
+        New-LeadTimeRecord 2 '2026-09-13T15:30:00Z' 1   # 9/14(月) 00:30 JST
+    )
+    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range)
+    Assert-Equal 2 $rows.Count
+    Assert-Equal 1 $rows[0].Under24h
+    Assert-Equal 1 $rows[1].Under24h
+}
+It '週次集計: 複数リポジトリでは (ALL) の行が追加される' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-13'; Repositories = @('RepoA', 'RepoB') }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(
+        New-LeadTimeRecord 1 '2026-09-08T00:00:00Z' 1 -Repo 'RepoA'
+        New-LeadTimeRecord 2 '2026-09-08T00:00:00Z' 30 -Repo 'RepoB'
+    )
+    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range)
+    Assert-Equal 3 $rows.Count
+    Assert-Equal 'RepoA' $rows[0].Repository
+    Assert-Equal 1 $rows[0].Total
+    Assert-Equal 'RepoB' $rows[1].Repository
+    Assert-Equal 1 $rows[1].From24To72h
+    Assert-Equal '(ALL)' $rows[2].Repository
+    Assert-Equal 2 $rows[2].Total
+}
+
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false
 try { $gitAvailable = (Invoke-Git -Arguments @('--version')).ExitCode -eq 0 } catch { }
