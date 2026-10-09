@@ -292,3 +292,13 @@ th { background: #f5f5f5; }
     [void]$sb.Append('</body></html>')
     return $sb.ToString()
 }
+
+function Test-LeadTimeChartEnabled {
+    <#
+    .SYNOPSIS
+        週次グラフを作るか判定する。DateBasis='Closed' のときだけ作る。
+        'Created' だと「範囲内に作成された PR を完了週で数える」ことになり、意味がずれるため。
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config)
+    return ([string]$Config.DateBasis -eq 'Closed')
+}

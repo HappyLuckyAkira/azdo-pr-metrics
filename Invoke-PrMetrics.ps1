@@ -51,7 +51,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $toolRoot = $PSScriptRoot
-foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1')) {
+foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1')) {
     . (Join-Path (Join-Path $toolRoot 'src') $file)
 }
 
@@ -257,6 +257,23 @@ try {
     Export-PrMetricsCsv -Data $sortedRecords -Path (Join-Path $outputDir 'prs.csv')
     Export-PrMetricsCsv -Data $periodSummary -Path (Join-Path $outputDir 'summary_by_period.csv')
     Export-PrMetricsCsv -Data $authorSummary -Path (Join-Path $outputDir 'summary_by_author.csv')
+
+    # ---- 6. クローズまでの時間区分別の週次グラフ ----
+    # 失敗しても既存の CSV は出力済みなので、警告だけ出して続ける
+    if (Test-LeadTimeChartEnabled -Config $config) {
+        try {
+            $leadTimeWeekly = Get-LeadTimeWeeklySummary -Records $sortedRecords -Config $config -Range $range
+            Export-PrMetricsCsv -Data $leadTimeWeekly -Path (Join-Path $outputDir 'summary_leadtime_weekly.csv')
+            $chartHtml = New-LeadTimeChartHtml -Summary $leadTimeWeekly -Config $config -Range $range
+            Export-PrMetricsHtml -Html $chartHtml -Path (Join-Path $outputDir 'leadtime_chart.html')
+        }
+        catch {
+            Write-Warning "クローズまでの時間の週次グラフを作成できませんでした（他の出力は完了しています）: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Warning "クローズまでの時間の週次グラフは DateBasis='Closed' のときだけ作成します（現在: $($config.DateBasis)）。"
+    }
 
     $configForLog = @{}
     foreach ($key in $config.Keys) { $configForLog[$key] = $config[$key] }

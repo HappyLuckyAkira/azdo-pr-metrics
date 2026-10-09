@@ -351,6 +351,11 @@ It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示す
     Assert-Contains $html '<svg '
 }
 
+It 'グラフは DateBasis=Closed のときだけ作る' {
+    Assert-Equal $true (Test-LeadTimeChartEnabled -Config (New-TestConfig))
+    Assert-Equal $false (Test-LeadTimeChartEnabled -Config (New-TestConfig @{ DateBasis = 'Created' }))
+}
+
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false
 try { $gitAvailable = (Invoke-Git -Arguments @('--version')).ExitCode -eq 0 } catch { }
