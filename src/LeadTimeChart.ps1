@@ -195,3 +195,100 @@ function New-LeadTimeChartSvg {
     [void]$sb.Append('</svg>')
     return $sb.ToString()
 }
+
+function New-LeadTimeChartHtml {
+    <#
+    .SYNOPSIS
+        週次集計の結果から、見出し・凡例・折れ線グラフ・注記・表をまとめた単一の HTML を作る。
+    .DESCRIPTION
+        外部リソースは読み込まない（社内ネットワークでも表示できるように）。
+        埋め込む文字列はすべて HTML エスケープする。
+        出力仕様: docs\06_出力仕様.md「leadtime_chart.html」
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Summary = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)]$Range,
+        [datetime]$GeneratedAt = (Get-Date)
+    )
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $rows = @($Summary | Where-Object { $null -ne $_ })
+    $repositories = @($rows | ForEach-Object { $_.Repository } | Select-Object -Unique)
+    $weekStartName = (New-Object Globalization.CultureInfo 'ja-JP').DateTimeFormat.GetDayName([DayOfWeek]$Config.WeekStartDay)
+    $fromText = $Range.FromLocal.ToString('yyyy-MM-dd', $culture)
+    $toText = $Range.ToLocalExclusive.AddDays(-1).ToString('yyyy-MM-dd', $culture)
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">')
+    [void]$sb.Append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    [void]$sb.Append('<title>クローズまでの時間別 PR 件数（週次）</title><style>')
+    [void]$sb.Append(@'
+body { font-family: "Yu Gothic UI", "Meiryo", sans-serif; margin: 24px; color: #212121; background: #ffffff; }
+h1 { font-size: 20px; margin-bottom: 8px; }
+h2 { font-size: 16px; margin-top: 32px; }
+.meta { color: #616161; font-size: 13px; margin: 2px 0; }
+.legend { list-style: none; padding: 0; display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.swatch { display: inline-block; width: 16px; height: 3px; vertical-align: middle; margin-right: 6px; }
+.chart { max-width: 960px; }
+.note { font-size: 12px; color: #616161; margin: 2px 0; }
+.empty { color: #c62828; font-size: 13px; }
+table { border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+th, td { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: right; }
+th { background: #f5f5f5; }
+.left { text-align: left; }
+'@)
+    [void]$sb.Append('</style></head><body>')
+
+    # 見出し
+    [void]$sb.Append('<h1>クローズまでの時間別 PR 件数（週次）</h1>')
+    [void]$sb.Append(('<p class="meta">組織 / プロジェクト: {0} / {1}</p>' -f [System.Net.WebUtility]::HtmlEncode([string]$Config.Organization), [System.Net.WebUtility]::HtmlEncode([string]$Config.Project)))
+    [void]$sb.Append(('<p class="meta">集計範囲: {0} 〜 {1}（完了日、{2}）／ 週の始まり: {3}</p>' -f $fromText, $toText, [System.Net.WebUtility]::HtmlEncode([string]$Config.TimeZoneId), $weekStartName))
+    [void]$sb.Append('<p class="meta">対象: マージ済み（completed）の PR ／ クローズまでの時間 = 完了日時 − 作成日時</p>')
+    [void]$sb.Append(('<p class="meta">作成日時: {0}</p>' -f $GeneratedAt.ToString('yyyy-MM-dd HH:mm', $culture)))
+
+    foreach ($repository in $repositories) {
+        $groupRows = @($rows | Where-Object { $_.Repository -eq $repository })
+        [void]$sb.Append(('<section><h2>{0}</h2>' -f [System.Net.WebUtility]::HtmlEncode([string]$repository)))
+
+        # 凡例
+        [void]$sb.Append('<ul class="legend">')
+        foreach ($bucket in $script:LeadTimeBuckets) {
+            [void]$sb.Append(('<li><span class="swatch" style="background:{0}"></span>{1}</li>' -f $bucket.Color, $bucket.Label))
+        }
+        [void]$sb.Append('</ul>')
+
+        $total = 0
+        foreach ($row in $groupRows) { $total += [int]$row.Total }
+        if ($total -eq 0) { [void]$sb.Append('<p class="empty">対象の PR がありません</p>') }
+
+        [void]$sb.Append('<div class="chart">')
+        [void]$sb.Append((New-LeadTimeChartSvg -Rows $groupRows))
+        [void]$sb.Append('</div>')
+
+        # 端の週の注記
+        foreach ($row in $groupRows) {
+            if (-not [bool]$row.IsPartial) { continue }
+            $label = [datetime]::ParseExact([string]$row.WeekStart, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture)
+            [void]$sb.Append(('<p class="note">* {0} の週は {1} 日分（集計範囲の端のため）</p>' -f $label, $row.Days))
+        }
+
+        # 表
+        [void]$sb.Append('<table><thead><tr><th class="left">週の開始日</th><th class="left">期間</th><th>日数</th>')
+        foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<th>{0}</th>' -f $bucket.Label)) }
+        [void]$sb.Append('<th>合計</th></tr></thead><tbody>')
+        foreach ($row in $groupRows) {
+            $first = [datetime]::ParseExact([string]$row.WeekStart, 'yyyy-MM-dd', $culture)
+            if ($Range.FromLocal -gt $first) { $first = $Range.FromLocal }
+            $last = [datetime]::ParseExact([string]$row.WeekEnd, 'yyyy-MM-dd', $culture)
+            [void]$sb.Append(('<tr><td class="left">{0}</td><td class="left">{1}〜{2}</td><td>{3}</td>' -f $row.WeekStart, $first.ToString('MM/dd', $culture), $last.ToString('MM/dd', $culture), $row.Days))
+            foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<td>{0}</td>' -f $row.($bucket.Id))) }
+            [void]$sb.Append(('<td>{0}</td></tr>' -f $row.Total))
+        }
+        [void]$sb.Append('</tbody></table></section>')
+    }
+
+    [void]$sb.Append('</body></html>')
+    return $sb.ToString()
+}

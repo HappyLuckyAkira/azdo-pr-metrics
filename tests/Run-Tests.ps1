@@ -312,6 +312,44 @@ It 'SVG: 週が多いと横軸ラベルを間引く（26 週 → 9 個）' {
         })
     Assert-Equal 9 (Measure-Match (New-LeadTimeChartSvg -Rows $rows) 'class="x-label"')
 }
+function Assert-Contains {
+    param([string]$Text, [string]$Expected)
+    if (-not $Text.Contains($Expected)) { throw "[$Expected] が含まれていない" }
+}
+
+It 'HTML: 見出し・凡例・グラフ・注記・表があり、記号はエスケープされる' {
+    $d = New-LeadTimeTestData
+    $d.Config.Project = 'P<&>'
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range -GeneratedAt ([datetime]'2026-10-09 10:00')
+    Assert-Contains $html '<meta charset="utf-8">'
+    Assert-Contains $html '<h1>クローズまでの時間別 PR 件数（週次）</h1>'
+    Assert-Contains $html '2026-09-03 〜 2026-09-30'
+    Assert-Contains $html 'P&lt;&amp;&gt;'
+    if ($html.Contains('P<&>')) { throw 'プロジェクト名がエスケープされていない' }
+    Assert-Contains $html '<h2>RepoA</h2>'
+    Assert-Contains $html '24〜72時間未満'
+    Assert-Contains $html '<svg '
+    Assert-Contains $html '* 08/31 の週は 4 日分'
+    Assert-Contains $html '* 09/28 の週は 3 日分'
+    Assert-Contains $html '<table>'
+    Assert-Contains $html '<td class="left">2026-09-14</td>'
+    if ($html.Contains('対象の PR がありません')) { throw 'PR があるのに「対象の PR がありません」が出ている' }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "prm_chart_$([guid]::NewGuid().ToString('N')).html"
+    try {
+        Export-PrMetricsHtml -Html $html -Path $tmp
+        Assert-Equal $html ([IO.File]::ReadAllText($tmp, [Text.Encoding]::UTF8))
+    }
+    finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
+}
+It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示する' {
+    $d = New-LeadTimeTestData
+    $rows = @(Get-LeadTimeWeeklySummary -Records @() -Config $d.Config -Range $d.Range)
+    $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range
+    Assert-Contains $html '対象の PR がありません'
+    Assert-Contains $html '<svg '
+}
 
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false

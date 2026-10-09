@@ -56,6 +56,15 @@ function Export-PrMetricsJson {
     [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding $false))
 }
 
+function Export-PrMetricsHtml {
+    <# HTML を UTF-8(BOM なし)で保存する。文字コードは HTML 内の <meta charset="utf-8"> で指定している。 #>
+    param(
+        [Parameter(Mandatory)][string]$Html,
+        [Parameter(Mandatory)][string]$Path
+    )
+    [IO.File]::WriteAllText($Path, $Html, (New-Object Text.UTF8Encoding $false))
+}
+
 function Import-PrMetricsRawJson {
     <# SaveRawJson で保存した PR 一覧 JSON を読み込む（-ReplayDir 用）。 #>
     param([Parameter(Mandatory)][string]$Path)
