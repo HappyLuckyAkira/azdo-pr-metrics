@@ -13,7 +13,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $toolRoot = Split-Path -Parent $PSScriptRoot
-foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1')) {
+foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1')) {
     . (Join-Path (Join-Path $toolRoot 'src') $file)
 }
 
@@ -193,6 +193,16 @@ It '複数リポジトリでは (ALL) 行が追加される' {
     $rows = @(Get-PeriodSummary -Records @() -Config $c -Range $r)
     Assert-Equal 6 $rows.Count '（2 週 × (RepoA, RepoB, ALL)）'
     Assert-Equal '(ALL)' $rows[-1].Repository
+}
+
+Write-Host '== LeadTimeChart'
+It 'クローズまでの時間の区分: 境界ちょうどは上側の区分' {
+    Assert-Equal 'Under24h' (Get-LeadTimeBucket -Hours 0)
+    Assert-Equal 'Under24h' (Get-LeadTimeBucket -Hours 23.99)
+    Assert-Equal 'From24To72h' (Get-LeadTimeBucket -Hours 24)
+    Assert-Equal 'From24To72h' (Get-LeadTimeBucket -Hours 71.99)
+    Assert-Equal 'Over72h' (Get-LeadTimeBucket -Hours 72)
+    Assert-Equal 'Over72h' (Get-LeadTimeBucket -Hours 500)
 }
 
 Write-Host '== Git 方式（実リポジトリ）'
