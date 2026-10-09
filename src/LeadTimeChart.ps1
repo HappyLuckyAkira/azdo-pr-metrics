@@ -88,3 +88,110 @@ function Get-LeadTimeWeeklySummary {
     }
     return $rows.ToArray()
 }
+
+function Format-SvgNumber {
+    <# SVG の座標を、地域設定に左右されない形式（小数点は .）で文字列にする。 #>
+    param([double]$Value)
+    return $Value.ToString('0.##', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function New-LeadTimeMarkerSvg {
+    <# 点の形（circle / square / triangle）を SVG 要素の文字列で返す。 #>
+    param([string]$Marker, [double]$X, [double]$Y, [string]$Fill, [string]$Stroke)
+    $style = 'fill="{0}" stroke="{1}" stroke-width="2"' -f $Fill, $Stroke
+    switch ($Marker) {
+        'square' { return '<rect x="{0}" y="{1}" width="8" height="8" {2}/>' -f (Format-SvgNumber ($X - 4)), (Format-SvgNumber ($Y - 4)), $style }
+        'triangle' {
+            $points = '{0},{1} {2},{3} {4},{3}' -f (Format-SvgNumber $X), (Format-SvgNumber ($Y - 5)), (Format-SvgNumber ($X - 5)), (Format-SvgNumber ($Y + 4)), (Format-SvgNumber ($X + 5))
+            return '<polygon points="{0}" {1}/>' -f $points, $style
+        }
+        default { return '<circle cx="{0}" cy="{1}" r="4" {2}/>' -f (Format-SvgNumber $X), (Format-SvgNumber $Y), $style }
+    }
+}
+
+function New-LeadTimeChartSvg {
+    <#
+    .SYNOPSIS
+        週次集計の行（1 グループ分）から、区分ごとの件数の折れ線グラフを SVG 文字列で作る。
+    .DESCRIPTION
+        ・横軸: 週の開始日(MM/dd)。最大 12 個になるようラベルを間引く。端の週は「*」を付ける
+        ・縦軸: 件数（0 始まり、整数の目盛り）
+        ・端の週(IsPartial)の点は白抜き。各点に <title> を付け、マウスを重ねると値が出る
+        行が 0 件なら空文字を返す。
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Rows = @(),
+        [int]$Width = 900,
+        [int]$Height = 360
+    )
+
+    $items = @($Rows | Where-Object { $null -ne $_ })
+    if ($items.Count -eq 0) { return '' }
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $left = 50; $right = 20; $top = 20; $bottom = 50
+    $plotWidth = $Width - $left - $right
+    $plotHeight = $Height - $top - $bottom
+    $count = $items.Count
+
+    # 縦軸の上限: 目盛り 5 本前後になる整数の刻み
+    $maxValue = 0
+    foreach ($item in $items) {
+        foreach ($bucket in $script:LeadTimeBuckets) {
+            if ([int]$item.($bucket.Id) -gt $maxValue) { $maxValue = [int]$item.($bucket.Id) }
+        }
+    }
+    $step = [int][math]::Max(1, [math]::Ceiling($maxValue / 5))
+    $yMax = $step * [int][math]::Max(1, [math]::Ceiling($maxValue / $step))
+
+    $xs = New-Object 'double[]' $count
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($count -eq 1) { $xs[$i] = $left + $plotWidth / 2 }
+        else { $xs[$i] = $left + $plotWidth * $i / ($count - 1) }
+    }
+    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMax }
+    $labels = @($items | ForEach-Object { [datetime]::ParseExact([string]$_.WeekStart, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture) })
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append(('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {0} {1}" width="100%" role="img" aria-label="クローズまでの時間別 PR 件数の週次推移" font-family="sans-serif">' -f $Width, $Height))
+
+    # 目盛り線と縦軸ラベル
+    for ($v = 0; $v -le $yMax; $v += $step) {
+        $y = Format-SvgNumber (& $toY $v)
+        [void]$sb.Append(('<line class="grid" x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#e0e0e0"/>' -f $left, $y, ($Width - $right)))
+        [void]$sb.Append(('<text class="y-label" x="{0}" y="{1}" text-anchor="end" font-size="12" fill="#616161">{2}</text>' -f ($left - 8), (Format-SvgNumber ((& $toY $v) + 4)), $v))
+    }
+    [void]$sb.Append(('<line x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#9e9e9e"/>' -f $left, (Format-SvgNumber (& $toY 0)), ($Width - $right)))
+
+    # 横軸ラベル（間引き）
+    $labelEvery = [int][math]::Max(1, [math]::Ceiling($count / 12))
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($i % $labelEvery -ne 0) { continue }
+        $text = $labels[$i]
+        if ([bool]$items[$i].IsPartial) { $text = $text + '*' }
+        [void]$sb.Append(('<text class="x-label" x="{0}" y="{1}" text-anchor="middle" font-size="12" fill="#616161">{2}</text>' -f (Format-SvgNumber $xs[$i]), ($Height - $bottom + 20), $text))
+    }
+
+    # 折れ線
+    foreach ($bucket in $script:LeadTimeBuckets) {
+        $points = for ($i = 0; $i -lt $count; $i++) { '{0},{1}' -f (Format-SvgNumber $xs[$i]), (Format-SvgNumber (& $toY ([int]$items[$i].($bucket.Id)))) }
+        [void]$sb.Append(('<polyline class="series series-{0}" fill="none" stroke="{1}" stroke-width="2" points="{2}"/>' -f $bucket.Id, $bucket.Color, ($points -join ' ')))
+    }
+
+    # 点（端の週は白抜き）とツールチップ
+    foreach ($bucket in $script:LeadTimeBuckets) {
+        for ($i = 0; $i -lt $count; $i++) {
+            $value = [int]$items[$i].($bucket.Id)
+            $partial = [bool]$items[$i].IsPartial
+            $class = 'point'; $fill = $bucket.Color
+            if ($partial) { $class = 'point partial'; $fill = '#ffffff' }
+            $title = [System.Net.WebUtility]::HtmlEncode(('{0} の週 {1}: {2}件' -f $labels[$i], $bucket.Label, $value))
+            $shape = New-LeadTimeMarkerSvg -Marker $bucket.Marker -X $xs[$i] -Y (& $toY $value) -Fill $fill -Stroke $bucket.Color
+            [void]$sb.Append(('<g class="{0}"><title>{1}</title>{2}</g>' -f $class, $title, $shape))
+        }
+    }
+
+    [void]$sb.Append('</svg>')
+    return $sb.ToString()
+}

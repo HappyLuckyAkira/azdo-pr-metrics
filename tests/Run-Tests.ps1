@@ -287,6 +287,32 @@ It '週次集計: 複数リポジトリでは (ALL) の行が追加される' {
     Assert-Equal 2 $rows[2].Total
 }
 
+function Measure-Match {
+    param([string]$Text, [string]$Pattern)
+    return ([regex]::Matches($Text, $Pattern)).Count
+}
+
+It 'SVG: 折れ線 3 本・端の週の点は白抜き・ツールチップと * 付きラベル' {
+    $d = New-LeadTimeTestData
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $svg = New-LeadTimeChartSvg -Rows $rows
+    Assert-Equal 3 (Measure-Match $svg '<polyline ')
+    Assert-Equal 15 (Measure-Match $svg 'class="point( partial)?"') '（5 週 × 3 本）'
+    Assert-Equal 6 (Measure-Match $svg 'class="point partial"') '（端の週 2 つ × 3 本）'
+    if (-not $svg.Contains('<title>08/31 の週 24時間未満: 1件</title>')) { throw 'ツールチップが無い' }
+    if (-not $svg.Contains('>09/28*</text>')) { throw '端の週のラベルに * が無い' }
+    Assert-Equal '' (New-LeadTimeChartSvg -Rows @())
+}
+It 'SVG: 週が多いと横軸ラベルを間引く（26 週 → 9 個）' {
+    $rows = @(1..26 | ForEach-Object {
+            [pscustomobject]@{
+                WeekStart = ([datetime]'2026-01-05').AddDays(7 * ($_ - 1)).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+                Days = 7; IsPartial = $false; Under24h = $_; From24To72h = 0; Over72h = 0; Total = $_
+            }
+        })
+    Assert-Equal 9 (Measure-Match (New-LeadTimeChartSvg -Rows $rows) 'class="x-label"')
+}
+
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false
 try { $gitAvailable = (Invoke-Git -Arguments @('--version')).ExitCode -eq 0 } catch { }
