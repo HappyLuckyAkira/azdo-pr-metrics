@@ -46,8 +46,9 @@ Get-ChildItem -Recurse -Include *.ps1,*.psd1 | ForEach-Object { '{0} {1}' -f ((G
 | `src/AzDoClient.ps1` | REST API（認証・URL・再試行・ページング） | docs/05 3 章、docs/03 |
 | `src/SizeCalculator.ps1` | PR サイズ（Git 方式 / Api 方式）、`Invoke-Git` | docs/05 4 章 |
 | `src/Aggregator.ps1` | 対象判定・明細レコード化・期間別/作成者別集計 | docs/05 5 章 |
-| `src/Output.ps1` | CSV/JSON の入出力・画面表示 | docs/05 6 章 |
-| `tests/Run-Tests.ps1` | 単体テスト（自作の簡易ランナー） | docs/05 7 章 |
+| `src/Output.ps1` | CSV/JSON/HTML の入出力・画面表示 | docs/05 6 章 |
+| `src/LeadTimeChart.ps1` | クローズまでの時間区分別の週次集計・折れ線グラフ（SVG/HTML） | docs/05 7 章 |
+| `tests/Run-Tests.ps1` | 単体テスト（自作の簡易ランナー） | docs/05 8 章 |
 | `docs/01〜09` | 要件・設計・API・設定・出力・確認手順・トラブル・Copilot ガイド | — |
 
 `src/*.ps1` はモジュールではなく、エントリポイントとテストから **dot-source** で読み込む。新しいファイルを追加したら、`Invoke-PrMetrics.ps1` と `tests/Run-Tests.ps1` の読み込みリストの両方に追加する。

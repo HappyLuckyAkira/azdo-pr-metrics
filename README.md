@@ -34,6 +34,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Invoke-PrMetrics.ps1
 | `prs.csv` | PR 1 件 = 1 行の明細（作成者・日時・リードタイム・行数・サイズ区分 など） |
 | `summary_by_period.csv` | 週/月ごとの PR 件数・リードタイム中央値・サイズ中央値・サイズ区分の内訳 |
 | `summary_by_author.csv` | 作成者ごとの PR 件数・週あたり件数・中央値 |
+| `summary_leadtime_weekly.csv` | マージ済み PR の、クローズまでの時間（24時間未満 / 24〜72時間未満 / 72時間以上）別の週次件数 |
+| `leadtime_chart.html` | 上記の折れ線グラフ（ブラウザで開く） |
 | `run_info.json` | 実行条件の記録（期間・設定・件数） |
 
 CSV は UTF-8（BOM 付き）なので、Excel でそのまま開けます。
@@ -73,7 +75,8 @@ pr-metrics/
 │   ├─ AzDoClient.ps1          … Azure DevOps REST API 呼び出し
 │   ├─ SizeCalculator.ps1      … PR サイズ計算（Git / Api 方式）
 │   ├─ Aggregator.ps1          … レコード化・期間別/作成者別の集計
-│   └─ Output.ps1              … CSV/JSON 出力・画面表示
+│   ├─ Output.ps1              … CSV/JSON/HTML 出力・画面表示
+│   └─ LeadTimeChart.ps1       … クローズまでの時間区分別の週次集計・グラフ
 ├─ tests/Run-Tests.ps1         … 単体テスト（接続不要）
 ├─ docs/                       … 設計資料
 └─ AGENTS.md                   … AI コーディングエージェント（Copilot など）向けの作業ルール
