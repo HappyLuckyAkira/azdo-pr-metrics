@@ -47,9 +47,10 @@ Get-ChildItem -Recurse -Include *.ps1,*.psd1 | ForEach-Object { '{0} {1}' -f ((G
 | `src/SizeCalculator.ps1` | PR サイズ（Git 方式 / Api 方式）、`Invoke-Git` | docs/05 4 章 |
 | `src/Aggregator.ps1` | 対象判定・明細レコード化・期間別/作成者別集計 | docs/05 5 章 |
 | `src/Output.ps1` | CSV/JSON/HTML の入出力・画面表示 | docs/05 6 章 |
-| `src/LeadTimeChart.ps1` | クローズまでの時間区分別の週次集計・折れ線グラフ（SVG/HTML） | docs/05 7 章 |
+| `src/LeadTimeChart.ps1` | クローズまでの時間区分別の集計（週次・日次 × 全体・大中小）・折れ線グラフ（SVG/HTML） | docs/05 7 章 |
 | `tests/Run-Tests.ps1` | 単体テスト（自作の簡易ランナー） | docs/05 8 章 |
 | `docs/01〜09` | 要件・設計・API・設定・出力・確認手順・トラブル・Copilot ガイド | — |
+| `docs/adr/` | 設計判断の記録（ADR）。1 判断 1 ファイル | — |
 
 `src/*.ps1` はモジュールではなく、エントリポイントとテストから **dot-source** で読み込む。新しいファイルを追加したら、`Invoke-PrMetrics.ps1` と `tests/Run-Tests.ps1` の読み込みリストの両方に追加する。
 
@@ -120,6 +121,7 @@ PowerShell 7 だけでテストして済ませない。**必ず `powershell`（5
 | 新しいエラー・その対処 | `docs/08_トラブルシューティング.md` |
 | 引数の追加 | `Invoke-PrMetrics.ps1` のコメントヘルプ、`docs/04` 3 章、`docs/05` 1 章 |
 | ファイル構成の変更 | `README.md`、このファイルの「構成」 |
+| 設計判断の追加・変更 | `docs/adr/` に ADR を追加し `docs/adr/README.md` の一覧に載せる（既存の判断を変えるときは元の ADR の状態を「置き換え」にして新しい ADR を作る）。`docs/02_基本設計.md` 5 章に D-xx として要点とリンクを書く |
 
 ## テストの書き方
 
