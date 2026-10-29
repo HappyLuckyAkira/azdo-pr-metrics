@@ -382,6 +382,40 @@ It 'SVG: 週が多いと横軸ラベルを間引く（26 週 → 9 個）' {
         })
     Assert-Equal 9 (Measure-Match (New-LeadTimeChartSvg -Rows $rows) 'class="x-label"')
 }
+It 'SVG(日単位): 日付ラベルとツールチップ（「の週」が付かない）・白抜きなし' {
+    $rows = @(1..3 | ForEach-Object {
+            [pscustomobject]@{ Date = ('2026-09-0{0}' -f $_); Under24h = $_; From24To72h = 0; Over72h = 0; Total = $_ }
+        })
+    $svg = New-LeadTimeChartSvg -Rows $rows -Unit Day
+    if (-not $svg.Contains('<title>09/02 24時間未満: 2件</title>')) { throw 'ツールチップが日単位の形式になっていない' }
+    if ($svg.Contains('の週')) { throw '日単位なのに「の週」が付いている' }
+    if (-not $svg.Contains('>09/01</text>')) { throw '日付ラベルが無い' }
+    if (-not $svg.Contains('日次推移')) { throw 'aria-label が日次になっていない' }
+    Assert-Equal 0 (Measure-Match $svg 'class="point partial"')
+    Assert-Equal 9 (Measure-Match $svg 'class="point"')
+}
+It 'SVG: -YMax で縦軸の上限をそろえられる（データの方が大きければデータに合わせる）' {
+    $small = [pscustomobject]@{ WeekStart = '2026-09-07'; Days = 7; IsPartial = $false; Under24h = 1; From24To72h = 0; Over72h = 0; Total = 1 }
+    $big = [pscustomobject]@{ WeekStart = '2026-09-14'; Days = 7; IsPartial = $false; Under24h = 12; From24To72h = 0; Over72h = 0; Total = 12 }
+    Assert-Equal 1 (Measure-Match (New-LeadTimeChartSvg -Rows @($small) -YMax 8) 'class="y-label"[^>]*>8</text>')
+    Assert-Equal 0 (Measure-Match (New-LeadTimeChartSvg -Rows @($small)) 'class="y-label"[^>]*>8</text>')
+    Assert-Equal 1 (Measure-Match (New-LeadTimeChartSvg -Rows @($big) -YMax 3) 'class="y-label"[^>]*>12</text>')
+    Assert-Equal 12 (Get-LeadTimeMaxCount -Rows @($small, $big))
+    Assert-Equal 0 (Get-LeadTimeMaxCount -Rows @())
+}
+It '描き方の切り替え: 対応表どおりの描画関数を使い、未知の値は例外' {
+    $rows = @([pscustomobject]@{ Date = '2026-09-01'; Under24h = 1; From24To72h = 0; Over72h = 0; Total = 1 })
+    Assert-Equal (New-LeadTimeChartSvg -Rows $rows -Unit Day -YMax 4) (New-LeadTimeChart -Rows $rows -Unit Day -YMax 4)
+    Assert-Equal 'Line' $script:LeadTimeChartStyles.Week
+    Assert-Equal 'Line' $script:LeadTimeChartStyles.Day
+    Assert-Equal 'All,Large,Medium,Small' ($script:LeadTimeDailySizeGroups -join ',')
+    $saved = $script:LeadTimeChartStyles.Day
+    try {
+        $script:LeadTimeChartStyles.Day = 'Bogus'
+        Assert-Throws { New-LeadTimeChart -Rows $rows -Unit Day } -Like '*Bogus*'
+    }
+    finally { $script:LeadTimeChartStyles.Day = $saved }
+}
 function Assert-Contains {
     param([string]$Text, [string]$Expected)
     if (-not $Text.Contains($Expected)) { throw "[$Expected] が含まれていない" }

@@ -262,19 +262,35 @@ function New-LeadTimeMarkerSvg {
     }
 }
 
+function Get-LeadTimeMaxCount {
+    <# 行の 3 区分の件数の最大値を返す（縦軸の上限をそろえるために使う）。行が無ければ 0。 #>
+    param([object[]]$Rows = @())
+    $max = 0
+    foreach ($row in @($Rows | Where-Object { $null -ne $_ })) {
+        foreach ($bucket in $script:LeadTimeBuckets) {
+            if ([int]$row.($bucket.Id) -gt $max) { $max = [int]$row.($bucket.Id) }
+        }
+    }
+    return $max
+}
+
 function New-LeadTimeChartSvg {
     <#
     .SYNOPSIS
-        週次集計の行（1 グループ分）から、区分ごとの件数の折れ線グラフを SVG 文字列で作る。
+        週次または日次の集計行（1 グループ分）から、区分ごとの件数の折れ線グラフを SVG 文字列で作る。
     .DESCRIPTION
-        ・横軸: 週の開始日(MM/dd)。最大 12 個になるようラベルを間引く。端の週は「*」を付ける
-        ・縦軸: 件数（0 始まり、整数の目盛り）
-        ・端の週(IsPartial)の点は白抜き。各点に <title> を付け、マウスを重ねると値が出る
+        ・横軸: 週の開始日（Unit=Week、WeekStart 列）または日付（Unit=Day、Date 列）を MM/dd で。
+          最大 12 個になるようラベルを間引く。週単位の端の週は「*」を付ける
+        ・縦軸: 件数（0 始まり、整数の目盛り）。-YMax を指定すると、上限を少なくともその値にする
+          （大中小のグラフで目盛りをそろえるため）。データの最大値の方が大きければデータに合わせる
+        ・週単位の端の週(IsPartial)の点は白抜き。各点に <title> を付け、マウスを重ねると値が出る
         行が 0 件なら空文字を返す。
     #>
     [CmdletBinding()]
     param(
         [object[]]$Rows = @(),
+        [ValidateSet('Week', 'Day')][string]$Unit = 'Week',
+        [int]$YMax = 0,
         [int]$Width = 900,
         [int]$Height = 360
     )
@@ -288,29 +304,29 @@ function New-LeadTimeChartSvg {
     $plotHeight = $Height - $top - $bottom
     $count = $items.Count
 
+    $dateField = 'WeekStart'; $unitText = '週次'; $titleFormat = '{0} の週 {1}: {2}件'
+    if ($Unit -eq 'Day') { $dateField = 'Date'; $unitText = '日次'; $titleFormat = '{0} {1}: {2}件' }
+
     # 縦軸の上限: 目盛り 5 本前後になる整数の刻み
-    $maxValue = 0
-    foreach ($item in $items) {
-        foreach ($bucket in $script:LeadTimeBuckets) {
-            if ([int]$item.($bucket.Id) -gt $maxValue) { $maxValue = [int]$item.($bucket.Id) }
-        }
-    }
+    $maxValue = [math]::Max([math]::Max(0, $YMax), (Get-LeadTimeMaxCount -Rows $items))
     $step = [int][math]::Max(1, [math]::Ceiling($maxValue / 5))
-    $yMax = $step * [int][math]::Max(1, [math]::Ceiling($maxValue / $step))
+    $yMaxValue = $step * [int][math]::Max(1, [math]::Ceiling($maxValue / $step))
 
     $xs = New-Object 'double[]' $count
     for ($i = 0; $i -lt $count; $i++) {
         if ($count -eq 1) { $xs[$i] = $left + $plotWidth / 2 }
         else { $xs[$i] = $left + $plotWidth * $i / ($count - 1) }
     }
-    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMax }
-    $labels = @($items | ForEach-Object { [datetime]::ParseExact([string]$_.WeekStart, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture) })
+    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMaxValue }
+    $labels = @($items | ForEach-Object { [datetime]::ParseExact([string]$_.$dateField, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture) })
+    # 端の週の扱い（白抜き・*）は週単位だけ
+    $partials = @($items | ForEach-Object { ($Unit -eq 'Week') -and [bool]$_.IsPartial })
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append(('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {0} {1}" width="100%" role="img" aria-label="クローズまでの時間別 PR 件数の週次推移" font-family="sans-serif">' -f $Width, $Height))
+    [void]$sb.Append(('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {0} {1}" width="100%" role="img" aria-label="クローズまでの時間別 PR 件数の{2}推移" font-family="sans-serif">' -f $Width, $Height, $unitText))
 
     # 目盛り線と縦軸ラベル
-    for ($v = 0; $v -le $yMax; $v += $step) {
+    for ($v = 0; $v -le $yMaxValue; $v += $step) {
         $y = Format-SvgNumber (& $toY $v)
         [void]$sb.Append(('<line class="grid" x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#e0e0e0"/>' -f $left, $y, ($Width - $right)))
         [void]$sb.Append(('<text class="y-label" x="{0}" y="{1}" text-anchor="end" font-size="12" fill="#616161">{2}</text>' -f ($left - 8), (Format-SvgNumber ((& $toY $v) + 4)), $v))
@@ -322,7 +338,7 @@ function New-LeadTimeChartSvg {
     for ($i = 0; $i -lt $count; $i++) {
         if ($i % $labelEvery -ne 0) { continue }
         $text = $labels[$i]
-        if ([bool]$items[$i].IsPartial) { $text = $text + '*' }
+        if ($partials[$i]) { $text = $text + '*' }
         [void]$sb.Append(('<text class="x-label" x="{0}" y="{1}" text-anchor="middle" font-size="12" fill="#616161">{2}</text>' -f (Format-SvgNumber $xs[$i]), ($Height - $bottom + 20), $text))
     }
 
@@ -336,10 +352,9 @@ function New-LeadTimeChartSvg {
     foreach ($bucket in $script:LeadTimeBuckets) {
         for ($i = 0; $i -lt $count; $i++) {
             $value = [int]$items[$i].($bucket.Id)
-            $partial = [bool]$items[$i].IsPartial
             $class = 'point'; $fill = $bucket.Color
-            if ($partial) { $class = 'point partial'; $fill = '#ffffff' }
-            $title = [System.Net.WebUtility]::HtmlEncode(('{0} の週 {1}: {2}件' -f $labels[$i], $bucket.Label, $value))
+            if ($partials[$i]) { $class = 'point partial'; $fill = '#ffffff' }
+            $title = [System.Net.WebUtility]::HtmlEncode(($titleFormat -f $labels[$i], $bucket.Label, $value))
             $shape = New-LeadTimeMarkerSvg -Marker $bucket.Marker -X $xs[$i] -Y (& $toY $value) -Fill $fill -Stroke $bucket.Color
             [void]$sb.Append(('<g class="{0}"><title>{1}</title>{2}</g>' -f $class, $title, $shape))
         }
@@ -347,6 +362,31 @@ function New-LeadTimeChartSvg {
 
     [void]$sb.Append('</svg>')
     return $sb.ToString()
+}
+
+# グラフの描き方の対応表（単位 → 描き方）。HTML は描画関数を直接呼ばず、必ず New-LeadTimeChart を通す。
+# 日単位の表し方を変えるときは、ここと New-LeadTimeChart の switch だけを変える（docs\adr\ADR-0002）。
+#   'Line' : 折れ線（New-LeadTimeChartSvg）
+$script:LeadTimeChartStyles = @{ Week = 'Line'; Day = 'Line' }
+
+# 日単位のグラフを出す区分。日単位を全体だけにするなら @('All') にする（docs\adr\ADR-0002 の案 C）。
+$script:LeadTimeDailySizeGroups = @('All', 'Large', 'Medium', 'Small')
+
+function New-LeadTimeChart {
+    <#
+    .SYNOPSIS
+        $script:LeadTimeChartStyles の対応表に従って描画関数を選び、グラフの SVG を返す。
+    #>
+    param(
+        [object[]]$Rows = @(),
+        [Parameter(Mandatory)][ValidateSet('Week', 'Day')][string]$Unit,
+        [int]$YMax = 0
+    )
+    $style = [string]$script:LeadTimeChartStyles[$Unit]
+    switch ($style) {
+        'Line' { return New-LeadTimeChartSvg -Rows $Rows -Unit $Unit -YMax $YMax }
+        default { throw "未対応のグラフの描き方です: $Unit = '$style'（`$script:LeadTimeChartStyles を確認してください）" }
+    }
 }
 
 function New-LeadTimeChartHtml {
