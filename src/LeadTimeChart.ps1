@@ -86,15 +86,70 @@ function Get-LeadTimeSizeGroupRangeText {
     return ('{0}：{1}〜{2}{3}' -f $names, $lower, $upper, $unit)
 }
 
+# 集計する区分（全体 + 大中小）。順序が CSV の行の並びになる。
+$script:LeadTimeSummaryGroupIds = @('All', 'Large', 'Medium', 'Small')
+
+function Get-LeadTimeTargetRecords {
+    <# 集計対象（マージ済みで、完了日時とリードタイムがある明細）だけを返す。 #>
+    param([object[]]$Records = @())
+    @($Records | Where-Object {
+            $null -ne $_ -and $_.Status -eq 'completed' -and $null -ne $_.LeadTimeHours -and $_.ClosedAt
+        })
+}
+
+function Get-LeadTimeSizeGroupRecords {
+    <# 区分 ID（All / Large / Medium / Small）に当たる明細だけを返す。All は全件（サイズ不明を含む）。 #>
+    param(
+        [object[]]$Records = @(),
+        [Parameter(Mandatory)][string]$GroupId
+    )
+    if ($GroupId -eq 'All') { return @($Records) }
+    @($Records | Where-Object { (Get-LeadTimeSizeGroup -SizeCategory ([string]$_.SizeCategory)) -eq $GroupId })
+}
+
+function Get-LeadTimeCountsByPeriod {
+    <#
+    .SYNOPSIS
+        明細を「期間の開始日(yyyy-MM-dd) → 区分ごとの件数」のハッシュテーブルにする。
+        期間は ClosedAt（設定タイムゾーン）が属する週（Unit=Week）または日（Unit=Day）。
+    #>
+    param(
+        [object[]]$Records = @(),
+        [Parameter(Mandatory)][ValidateSet('Week', 'Day')][string]$Unit,
+        [string]$WeekStartDay = 'Monday'
+    )
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $counts = @{}
+    foreach ($record in @($Records | Where-Object { $null -ne $_ })) {
+        $closedLocal = [datetime]::ParseExact([string]$record.ClosedAt, 'yyyy-MM-dd HH:mm', $culture)
+        $key = (Get-PeriodStart -LocalDate $closedLocal -Unit $Unit -WeekStartDay $WeekStartDay).ToString('yyyy-MM-dd', $culture)
+        if (-not $counts.ContainsKey($key)) { $counts[$key] = @{ Under24h = 0; From24To72h = 0; Over72h = 0 } }
+        $bucket = Get-LeadTimeBucket -Hours ([double]$record.LeadTimeHours)
+        $counts[$key][$bucket] = $counts[$key][$bucket] + 1
+    }
+    return $counts
+}
+
+function Get-LeadTimeCountOrZero {
+    <# 期間キーの件数を返す。その期間に PR が無ければ 0 件を返す。 #>
+    param(
+        [hashtable]$Counts = @{},
+        [Parameter(Mandatory)][string]$Key
+    )
+    if ($Counts.ContainsKey($Key)) { return $Counts[$Key] }
+    return @{ Under24h = 0; From24To72h = 0; Over72h = 0 }
+}
+
 function Get-LeadTimeWeeklySummary {
     <#
     .SYNOPSIS
-        マージ済み PR を完了週 × クローズまでの時間の区分で数える。
+        マージ済み PR を 完了週 × クローズまでの時間の区分 で数える（全体・大・中・小）。
     .DESCRIPTION
         ・対象は Status='completed' かつ完了日時(ClosedAt)とリードタイムがある明細だけ
         ・週は ClosedAt（設定タイムゾーン）が属する週。週の始まりは WeekStartDay
         ・範囲内のすべての週を出力する（0 件の週も行を出す）
         ・範囲の端で切れた週は Days < 7、IsPartial = $true
+        ・SizeGroup: All（全件。サイズ不明を含む）/ Large / Medium / Small（docs\adr\ADR-0001）
         列の定義: docs\06_出力仕様.md「summary_leadtime_weekly.csv」
     #>
     [CmdletBinding()]
@@ -107,44 +162,81 @@ function Get-LeadTimeWeeklySummary {
     $culture = [Globalization.CultureInfo]::InvariantCulture
     $weekStarts = @(Get-PeriodStarts -Range $Range -Unit 'Week' -WeekStartDay $Config.WeekStartDay)
     $rangeLastDay = $Range.ToLocalExclusive.AddDays(-1)
-    $targets = @($Records | Where-Object {
-            $null -ne $_ -and $_.Status -eq 'completed' -and $null -ne $_.LeadTimeHours -and $_.ClosedAt
-        })
+    $targets = @(Get-LeadTimeTargetRecords -Records $Records)
 
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($group in (Get-RecordGroups -Records $targets -Repositories $Config.Repositories)) {
-        # 週の開始日(yyyy-MM-dd) → 区分ごとの件数
-        $counts = @{}
-        foreach ($record in $group.Records) {
-            $closedLocal = [datetime]::ParseExact([string]$record.ClosedAt, 'yyyy-MM-dd HH:mm', $culture)
-            $key = (Get-PeriodStart -LocalDate $closedLocal -Unit 'Week' -WeekStartDay $Config.WeekStartDay).ToString('yyyy-MM-dd', $culture)
-            if (-not $counts.ContainsKey($key)) { $counts[$key] = @{ Under24h = 0; From24To72h = 0; Over72h = 0 } }
-            $bucket = Get-LeadTimeBucket -Hours ([double]$record.LeadTimeHours)
-            $counts[$key][$bucket] = $counts[$key][$bucket] + 1
+        foreach ($sizeGroupId in $script:LeadTimeSummaryGroupIds) {
+            $groupRecords = @(Get-LeadTimeSizeGroupRecords -Records $group.Records -GroupId $sizeGroupId)
+            $counts = Get-LeadTimeCountsByPeriod -Records $groupRecords -Unit 'Week' -WeekStartDay $Config.WeekStartDay
+
+            foreach ($start in $weekStarts) {
+                $firstDay = $start
+                if ($Range.FromLocal -gt $firstDay) { $firstDay = $Range.FromLocal }
+                $lastDay = $start.AddDays(6)
+                if ($lastDay -gt $rangeLastDay) { $lastDay = $rangeLastDay }
+                $days = [int]($lastDay - $firstDay).TotalDays + 1
+
+                $key = $start.ToString('yyyy-MM-dd', $culture)
+                $count = Get-LeadTimeCountOrZero -Counts $counts -Key $key
+
+                $rows.Add([pscustomobject][ordered]@{
+                        Repository  = $group.Name
+                        SizeGroup   = $sizeGroupId
+                        WeekStart   = $key
+                        WeekEnd     = $lastDay.ToString('yyyy-MM-dd', $culture)
+                        Days        = $days
+                        IsPartial   = ($days -lt 7)
+                        Under24h    = [int]$count.Under24h
+                        From24To72h = [int]$count.From24To72h
+                        Over72h     = [int]$count.Over72h
+                        Total       = [int]($count.Under24h + $count.From24To72h + $count.Over72h)
+                    })
+            }
         }
+    }
+    return $rows.ToArray()
+}
 
-        foreach ($start in $weekStarts) {
-            $firstDay = $start
-            if ($Range.FromLocal -gt $firstDay) { $firstDay = $Range.FromLocal }
-            $lastDay = $start.AddDays(6)
-            if ($lastDay -gt $rangeLastDay) { $lastDay = $rangeLastDay }
-            $days = [int]($lastDay - $firstDay).TotalDays + 1
+function Get-LeadTimeDailySummary {
+    <#
+    .SYNOPSIS
+        マージ済み PR を 完了日 × クローズまでの時間の区分 で数える（全体・大・中・小）。
+    .DESCRIPTION
+        ・対象・区分・SizeGroup の扱いは Get-LeadTimeWeeklySummary と同じ
+        ・日は ClosedAt（設定タイムゾーン）の日付。範囲内のすべての日（土日・0 件の日も）を出力する
+        列の定義: docs\06_出力仕様.md「summary_leadtime_daily.csv」
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Records = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)]$Range
+    )
 
-            $key = $start.ToString('yyyy-MM-dd', $culture)
-            $count = @{ Under24h = 0; From24To72h = 0; Over72h = 0 }
-            if ($counts.ContainsKey($key)) { $count = $counts[$key] }
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $days = @(Get-PeriodStarts -Range $Range -Unit 'Day')
+    $targets = @(Get-LeadTimeTargetRecords -Records $Records)
 
-            $rows.Add([pscustomobject][ordered]@{
-                    Repository  = $group.Name
-                    WeekStart   = $key
-                    WeekEnd     = $lastDay.ToString('yyyy-MM-dd', $culture)
-                    Days        = $days
-                    IsPartial   = ($days -lt 7)
-                    Under24h    = [int]$count.Under24h
-                    From24To72h = [int]$count.From24To72h
-                    Over72h     = [int]$count.Over72h
-                    Total       = [int]($count.Under24h + $count.From24To72h + $count.Over72h)
-                })
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($group in (Get-RecordGroups -Records $targets -Repositories $Config.Repositories)) {
+        foreach ($sizeGroupId in $script:LeadTimeSummaryGroupIds) {
+            $groupRecords = @(Get-LeadTimeSizeGroupRecords -Records $group.Records -GroupId $sizeGroupId)
+            $counts = Get-LeadTimeCountsByPeriod -Records $groupRecords -Unit 'Day'
+
+            foreach ($day in $days) {
+                $key = $day.ToString('yyyy-MM-dd', $culture)
+                $count = Get-LeadTimeCountOrZero -Counts $counts -Key $key
+                $rows.Add([pscustomobject][ordered]@{
+                        Repository  = $group.Name
+                        SizeGroup   = $sizeGroupId
+                        Date        = $key
+                        Under24h    = [int]$count.Under24h
+                        From24To72h = [int]$count.From24To72h
+                        Over72h     = [int]$count.Over72h
+                        Total       = [int]($count.Under24h + $count.From24To72h + $count.Over72h)
+                    })
+            }
         }
     }
     return $rows.ToArray()

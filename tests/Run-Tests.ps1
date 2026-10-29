@@ -227,13 +227,14 @@ It '大中小の範囲表示: 設定の閾値から作る（Git は行数、Api 
 
 function New-LeadTimeRecord {
     # 完了日時(UTC 文字列)とクローズまでの時間(時間)から明細レコードを作る
-    param([int]$Id, [string]$ClosedUtc, [double]$Hours, [string]$Repo = 'RepoA', [string]$Status = 'completed')
+    param([int]$Id, [string]$ClosedUtc, [double]$Hours, [string]$Repo = 'RepoA', [string]$Status = 'completed', [string]$SizeCategory = '')
     $culture = [Globalization.CultureInfo]::InvariantCulture
     $closed = [datetime]::Parse($ClosedUtc, $culture, [Globalization.DateTimeStyles]'AssumeUniversal,AdjustToUniversal')
     $created = $closed.AddHours(-$Hours).ToString('yyyy-MM-ddTHH:mm:ssZ', $culture)
     $rec = ConvertTo-PrRecord -PullRequest (New-FakePr $Id $created $ClosedUtc) -Repository $Repo -Size (New-PrSizeResult) `
         -Config (New-TestConfig) -TimeZone $tokyo -WebBaseUrl 'x'
     $rec.Status = $Status
+    $rec.SizeCategory = $SizeCategory
     return $rec
 }
 
@@ -245,19 +246,21 @@ function New-LeadTimeTestData {
         -Config $config -TimeZone $tokyo -WebBaseUrl 'x'
     $active.Status = 'active'
     $records = @(
-        New-LeadTimeRecord 1 '2026-09-03T01:00:00Z' 5      # 8/31 の週・24時間未満
-        New-LeadTimeRecord 2 '2026-09-04T00:00:00Z' 30     # 8/31 の週・24〜72時間
-        New-LeadTimeRecord 3 '2026-09-15T00:00:00Z' 100    # 9/14 の週・72時間以上
-        New-LeadTimeRecord 4 '2026-09-15T00:00:00Z' 5 -Status 'abandoned'   # 数えない
-        New-LeadTimeRecord 5 '2026-09-29T00:00:00Z' 72     # 9/28 の週・72時間以上（境界）
-        $active                                            # 完了日時なし → 数えない
+        New-LeadTimeRecord 1 '2026-09-03T01:00:00Z' 5 -SizeCategory 'XS'     # 8/31 の週・24時間未満・小
+        New-LeadTimeRecord 2 '2026-09-04T00:00:00Z' 30 -SizeCategory 'M'     # 8/31 の週・24〜72時間・中
+        New-LeadTimeRecord 3 '2026-09-15T00:00:00Z' 100 -SizeCategory 'XL'   # 9/14 の週・72時間以上・大
+        New-LeadTimeRecord 4 '2026-09-15T00:00:00Z' 5 -Status 'abandoned' -SizeCategory 'S'   # 数えない
+        New-LeadTimeRecord 5 '2026-09-29T00:00:00Z' 72                       # 9/28 の週・72時間以上（境界）・サイズ不明
+        $active                                                              # 完了日時なし → 数えない
     )
     return @{ Config = $config; Range = $range; Records = $records }
 }
 
 It '週次集計: マージ済みだけ数え、0 件の週と端の週の日数を出す' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $all = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Equal 20 $all.Count '（5 週 × 全体・大・中・小）'
+    $rows = @($all | Where-Object { $_.SizeGroup -eq 'All' })
     Assert-Equal 5 $rows.Count
     Assert-Equal 'RepoA' $rows[0].Repository
     Assert-Equal '2026-08-31' $rows[0].WeekStart
@@ -285,7 +288,7 @@ It '週次集計: 日曜 23:30(日本時間)完了はその週、月曜 00:30 �
         New-LeadTimeRecord 1 '2026-09-13T14:30:00Z' 1   # 9/13(日) 23:30 JST
         New-LeadTimeRecord 2 '2026-09-13T15:30:00Z' 1   # 9/14(月) 00:30 JST
     )
-    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range | Where-Object { $_.SizeGroup -eq 'All' })
     Assert-Equal 2 $rows.Count
     Assert-Equal 1 $rows[0].Under24h
     Assert-Equal 1 $rows[1].Under24h
@@ -297,12 +300,59 @@ It '週次集計: 複数リポジトリでは (ALL) の行が追加される' {
         New-LeadTimeRecord 1 '2026-09-08T00:00:00Z' 1 -Repo 'RepoA'
         New-LeadTimeRecord 2 '2026-09-08T00:00:00Z' 30 -Repo 'RepoB'
     )
-    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range | Where-Object { $_.SizeGroup -eq 'All' })
     Assert-Equal 3 $rows.Count
     Assert-Equal 'RepoA' $rows[0].Repository
     Assert-Equal 1 $rows[0].Total
     Assert-Equal 'RepoB' $rows[1].Repository
     Assert-Equal 1 $rows[1].From24To72h
+    Assert-Equal '(ALL)' $rows[2].Repository
+    Assert-Equal 2 $rows[2].Total
+}
+It '週次集計: 全体・大・中・小の行があり、サイズ不明は全体だけに入る' {
+    $d = New-LeadTimeTestData
+    $all = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Equal 'Repository,SizeGroup,WeekStart,WeekEnd,Days,IsPartial,Under24h,From24To72h,Over72h,Total' (($all[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+    Assert-Equal 'All,Large,Medium,Small' ((@($all | ForEach-Object { $_.SizeGroup } | Select-Object -Unique)) -join ',')
+    $week1 = @($all | Where-Object { $_.WeekStart -eq '2026-08-31' })
+    Assert-Equal 2 @($week1 | Where-Object { $_.SizeGroup -eq 'All' })[0].Total
+    Assert-Equal 0 @($week1 | Where-Object { $_.SizeGroup -eq 'Large' })[0].Total
+    Assert-Equal 1 @($week1 | Where-Object { $_.SizeGroup -eq 'Medium' })[0].From24To72h
+    Assert-Equal 1 @($week1 | Where-Object { $_.SizeGroup -eq 'Small' })[0].Under24h
+    Assert-Equal 1 @($all | Where-Object { $_.WeekStart -eq '2026-09-14' -and $_.SizeGroup -eq 'Large' })[0].Over72h
+    $week5 = @($all | Where-Object { $_.WeekStart -eq '2026-09-28' })
+    Assert-Equal 1 @($week5 | Where-Object { $_.SizeGroup -eq 'All' })[0].Over72h '（サイズ不明でも全体には入る）'
+    Assert-Equal 0 (($week5 | Where-Object { $_.SizeGroup -ne 'All' } | Measure-Object -Property Total -Sum).Sum) '（サイズ不明は大中小に入らない）'
+}
+It '日次集計: 範囲内の全日を出し、日本時間の日付で数える' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-13' }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(
+        New-LeadTimeRecord 1 '2026-09-08T14:59:00Z' 5 -SizeCategory 'S'    # 9/8 23:59 JST
+        New-LeadTimeRecord 2 '2026-09-08T15:00:00Z' 30 -SizeCategory 'L'   # 9/9 00:00 JST
+    )
+    $all = @(Get-LeadTimeDailySummary -Records $records -Config $config -Range $range)
+    Assert-Equal 28 $all.Count '（7 日 × 全体・大・中・小）'
+    Assert-Equal 'Repository,SizeGroup,Date,Under24h,From24To72h,Over72h,Total' (($all[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+    $rows = @($all | Where-Object { $_.SizeGroup -eq 'All' })
+    Assert-Equal 7 $rows.Count
+    Assert-Equal '2026-09-07' $rows[0].Date
+    Assert-Equal '2026-09-13' $rows[6].Date
+    Assert-Equal 0 $rows[0].Total '（0 件の日も出る）'
+    Assert-Equal 1 $rows[1].Under24h '（9/8 23:59 は 9/8）'
+    Assert-Equal 1 $rows[2].From24To72h '（9/9 00:00 は 9/9）'
+    Assert-Equal 1 @($all | Where-Object { $_.SizeGroup -eq 'Small' -and $_.Date -eq '2026-09-08' })[0].Under24h
+    Assert-Equal 1 @($all | Where-Object { $_.SizeGroup -eq 'Large' -and $_.Date -eq '2026-09-09' })[0].From24To72h
+}
+It '日次集計: 複数リポジトリでは (ALL) の行が追加される' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-07'; Repositories = @('RepoA', 'RepoB') }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(
+        New-LeadTimeRecord 1 '2026-09-07T01:00:00Z' 1 -Repo 'RepoA'
+        New-LeadTimeRecord 2 '2026-09-07T01:00:00Z' 30 -Repo 'RepoB'
+    )
+    $rows = @(Get-LeadTimeDailySummary -Records $records -Config $config -Range $range | Where-Object { $_.SizeGroup -eq 'All' })
+    Assert-Equal 3 $rows.Count
     Assert-Equal '(ALL)' $rows[2].Repository
     Assert-Equal 2 $rows[2].Total
 }
@@ -314,7 +364,7 @@ function Measure-Match {
 
 It 'SVG: 折れ線 3 本・端の週の点は白抜き・ツールチップと * 付きラベル' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
     $svg = New-LeadTimeChartSvg -Rows $rows
     Assert-Equal 3 (Measure-Match $svg '<polyline ')
     Assert-Equal 15 (Measure-Match $svg 'class="point( partial)?"') '（5 週 × 3 本）'
@@ -340,7 +390,7 @@ function Assert-Contains {
 It 'HTML: 見出し・凡例・グラフ・注記・表があり、記号はエスケープされる' {
     $d = New-LeadTimeTestData
     $d.Config.Project = 'P<&>'
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
     $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range -GeneratedAt ([datetime]'2026-10-09 10:00')
     Assert-Contains $html '<meta charset="utf-8">'
     Assert-Contains $html '<h1>クローズまでの時間別 PR 件数（週次）</h1>'
@@ -365,7 +415,7 @@ It 'HTML: 見出し・凡例・グラフ・注記・表があり、記号はエ�
 }
 It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示する' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records @() -Config $d.Config -Range $d.Range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records @() -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
     $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range
     Assert-Contains $html '対象の PR がありません'
     Assert-Contains $html '<svg '
@@ -373,11 +423,11 @@ It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示す
 
 It 'HTML: 週の始まりの曜日名が設定どおりに日本語で出る（既定は月曜日）' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
     Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 月曜日'
 
     $d.Config.WeekStartDay = 'Sunday'
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
     Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 日曜日'
 }
 

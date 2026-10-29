@@ -264,7 +264,8 @@ try {
         try {
             $leadTimeWeekly = Get-LeadTimeWeeklySummary -Records $sortedRecords -Config $config -Range $range
             Export-PrMetricsCsv -Data $leadTimeWeekly -Path (Join-Path $outputDir 'summary_leadtime_weekly.csv')
-            $chartHtml = New-LeadTimeChartHtml -Summary $leadTimeWeekly -Config $config -Range $range
+            # HTML は全体のグラフを描くため、全体の行だけを渡す
+            $chartHtml = New-LeadTimeChartHtml -Summary @($leadTimeWeekly | Where-Object { $_.SizeGroup -eq 'All' }) -Config $config -Range $range
             Export-PrMetricsHtml -Html $chartHtml -Path (Join-Path $outputDir 'leadtime_chart.html')
         }
         catch {
