@@ -25,6 +25,67 @@ function Get-LeadTimeBucket {
     return 'Over72h'
 }
 
+# 大・中・小（既存の SizeCategory をまとめた区分）。順序が HTML の並び順（大 → 中 → 小）になる。
+#   Categories: 対応する SizeCategory の名前（settings.psd1 の SizeCategories の Name）
+#   どれにも当たらない SizeCategory（空・独自の名前）は「サイズ不明」として扱う（docs\adr\ADR-0001）
+$script:LeadTimeSizeGroups = @(
+    [pscustomobject]@{ Id = 'Large';  Label = '大'; Categories = @('L', 'XL') }
+    [pscustomobject]@{ Id = 'Medium'; Label = '中'; Categories = @('M') }
+    [pscustomobject]@{ Id = 'Small';  Label = '小'; Categories = @('XS', 'S') }
+)
+
+function Get-LeadTimeSizeGroup {
+    <#
+    .SYNOPSIS
+        SizeCategory（XS〜XL）を大中小の区分 ID（Large / Medium / Small）に変換する。
+        どれにも当たらなければ空文字（サイズ不明）を返す。
+    #>
+    param([string]$SizeCategory)
+    foreach ($group in $script:LeadTimeSizeGroups) {
+        if ($SizeCategory -and $group.Categories -contains $SizeCategory) { return $group.Id }
+    }
+    return ''
+}
+
+function Get-LeadTimeSizeGroupRangeText {
+    <#
+    .SYNOPSIS
+        大中小の見出しに出す範囲の文字列を作る（例: 'L・XL：251行〜'）。
+    .DESCRIPTION
+        設定の SizeCategories の閾値から作るので、閾値を変えると表示も変わる。
+        SizeMethod が 'Api' のときはファイル数（MaxFiles）、それ以外は行数（MaxLines）で表示する。
+        下限 = 区分の直前（小さい側）の区分の上限 + 1、上限 = 区分の最後の上限（$null は上限なし）。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $group = $script:LeadTimeSizeGroups | Where-Object { $_.Id -eq $GroupId } | Select-Object -First 1
+    if ($null -eq $group) { throw "未知の大中小の区分です: $GroupId" }
+
+    $names = $group.Categories -join '・'
+    $limitKey = 'MaxLines'; $unit = '行'
+    if ([string]$Config.SizeMethod -eq 'Api') { $limitKey = 'MaxFiles'; $unit = 'ファイル' }
+
+    $categories = @($Config.SizeCategories)
+    $indexes = @(for ($i = 0; $i -lt $categories.Count; $i++) {
+            if ($group.Categories -contains [string]$categories[$i].Name) { $i }
+        })
+    if ($indexes.Count -eq 0) { return $names }
+
+    $lower = $null
+    if ($indexes[0] -gt 0 -and $null -ne $categories[$indexes[0] - 1][$limitKey]) {
+        $lower = [int]$categories[$indexes[0] - 1][$limitKey] + 1
+    }
+    $upper = $categories[$indexes[-1]][$limitKey]
+
+    if ($null -eq $lower -and $null -eq $upper) { return $names }
+    if ($null -eq $lower) { return ('{0}：〜{1}{2}' -f $names, $upper, $unit) }
+    if ($null -eq $upper) { return ('{0}：{1}{2}〜' -f $names, $lower, $unit) }
+    return ('{0}：{1}〜{2}{3}' -f $names, $lower, $upper, $unit)
+}
+
 function Get-LeadTimeWeeklySummary {
     <#
     .SYNOPSIS

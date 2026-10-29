@@ -204,6 +204,26 @@ It 'クローズまでの時間の区分: 境界ちょうどは上側の区分' 
     Assert-Equal 'Over72h' (Get-LeadTimeBucket -Hours 72)
     Assert-Equal 'Over72h' (Get-LeadTimeBucket -Hours 500)
 }
+It '大中小: XS・S は小、M は中、L・XL は大、それ以外はサイズ不明' {
+    Assert-Equal 'Small' (Get-LeadTimeSizeGroup -SizeCategory 'XS')
+    Assert-Equal 'Small' (Get-LeadTimeSizeGroup -SizeCategory 'S')
+    Assert-Equal 'Medium' (Get-LeadTimeSizeGroup -SizeCategory 'M')
+    Assert-Equal 'Large' (Get-LeadTimeSizeGroup -SizeCategory 'L')
+    Assert-Equal 'Large' (Get-LeadTimeSizeGroup -SizeCategory 'XL')
+    Assert-Equal '' (Get-LeadTimeSizeGroup -SizeCategory '')
+    Assert-Equal '' (Get-LeadTimeSizeGroup -SizeCategory 'XXL')
+}
+It '大中小の範囲表示: 設定の閾値から作る（Git は行数、Api はファイル数）' {
+    $c = New-TestConfig
+    Assert-Equal 'L・XL：251行〜' (Get-LeadTimeSizeGroupRangeText -GroupId 'Large' -Config $c)
+    Assert-Equal 'M：51〜250行' (Get-LeadTimeSizeGroupRangeText -GroupId 'Medium' -Config $c)
+    Assert-Equal 'XS・S：〜50行' (Get-LeadTimeSizeGroupRangeText -GroupId 'Small' -Config $c)
+    $c.SizeMethod = 'Api'
+    Assert-Equal 'L・XL：11ファイル〜' (Get-LeadTimeSizeGroupRangeText -GroupId 'Large' -Config $c)
+    Assert-Equal 'M：4〜10ファイル' (Get-LeadTimeSizeGroupRangeText -GroupId 'Medium' -Config $c)
+    Assert-Equal 'XS・S：〜3ファイル' (Get-LeadTimeSizeGroupRangeText -GroupId 'Small' -Config $c)
+    Assert-Throws { Get-LeadTimeSizeGroupRangeText -GroupId 'Huge' -Config $c } -Like '*Huge*'
+}
 
 function New-LeadTimeRecord {
     # 完了日時(UTC 文字列)とクローズまでの時間(時間)から明細レコードを作る
