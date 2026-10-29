@@ -129,7 +129,7 @@ pr-metrics/
 │   ├─ SizeCalculator.ps1      … PR サイズ計算（Git / Api 方式）
 │   ├─ Aggregator.ps1          … レコード化・期間別/作成者別の集計
 │   ├─ Output.ps1              … CSV/JSON/HTML 出力・画面表示
-│   └─ LeadTimeChart.ps1       … クローズまでの時間区分別の週次集計・グラフ
+│   └─ LeadTimeChart.ps1       … クローズまでの時間区分別の集計（週次・日次 × 全体・大中小）・グラフ
 ├─ tests/Run-Tests.ps1         … 単体テスト（接続不要）
 ├─ docs/                       … 設計資料（docs/adr/ は設計判断の記録）
 └─ AGENTS.md                   … AI コーディングエージェント（Copilot など）向けの作業ルール

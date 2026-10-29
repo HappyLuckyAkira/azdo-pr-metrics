@@ -1,8 +1,9 @@
 ﻿# =============================================================================
 # LeadTimeChart.ps1
-#   クローズまでの時間（作成 → 完了）を 3 区分に分け、週ごとの件数を集計して
-#   折れ線グラフ（SVG を埋め込んだ HTML）を作る。
+#   クローズまでの時間（作成 → 完了）を 3 区分に分け、週ごと・日ごとの件数を
+#   全体と 大・中・小 のサイズ別に集計して、折れ線グラフ（SVG を埋め込んだ HTML）を作る。
 #   仕様: docs\superpowers\specs\2026-10-09-leadtime-weekly-chart-design.md
+#         docs\superpowers\specs\2026-10-29-leadtime-daily-and-size-charts-design.md
 #   詳細設計: docs\05_詳細設計.md「LeadTimeChart.ps1」
 # =============================================================================
 
@@ -581,7 +582,7 @@ th { background: #f5f5f5; }
 function Test-LeadTimeChartEnabled {
     <#
     .SYNOPSIS
-        週次グラフを作るか判定する。DateBasis='Closed' のときだけ作る。
+        クローズまでの時間のグラフ（週次・日次）と週次・日次 CSV を作るか判定する。DateBasis='Closed' のときだけ作る。
         'Created' だと「範囲内に作成された PR を完了週で数える」ことになり、意味がずれるため。
     #>
     param([Parameter(Mandatory)][hashtable]$Config)

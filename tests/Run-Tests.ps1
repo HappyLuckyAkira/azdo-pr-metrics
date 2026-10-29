@@ -510,6 +510,17 @@ It 'HTML: 数値の表は開閉式（週単位・日単位）' {
     Assert-Contains $html '<td class="left">2026-09-30</td><td class="left">小</td>'
 }
 
+It 'HTML: リポジトリ名もエスケープされる' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-13'; Repositories = @('R<&>') }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(New-LeadTimeRecord 1 '2026-09-08T00:00:00Z' 1 -Repo 'R<&>' -SizeCategory 'S')
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $records -Config $config -Range $range)
+    $daily = @(Get-LeadTimeDailySummary -Records $records -Config $config -Range $range)
+    $html = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $config -Range $range
+    Assert-Contains $html '<h2>R&lt;&amp;&gt;</h2>'
+    if ($html.Contains('R<&>')) { throw 'リポジトリ名がエスケープされていない' }
+}
+
 It 'グラフは DateBasis=Closed のときだけ作る' {
     Assert-Equal $true (Test-LeadTimeChartEnabled -Config (New-TestConfig))
     Assert-Equal $false (Test-LeadTimeChartEnabled -Config (New-TestConfig @{ DateBasis = 'Created' }))
