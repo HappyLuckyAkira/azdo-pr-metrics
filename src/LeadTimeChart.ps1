@@ -389,26 +389,81 @@ function New-LeadTimeChart {
     }
 }
 
+function Get-LeadTimeGroupLabel {
+    <# 区分 ID の表示名を返す（All は「全体」、大中小は $script:LeadTimeSizeGroups の Label）。 #>
+    param([Parameter(Mandatory)][string]$GroupId)
+    if ($GroupId -eq 'All') { return '全体' }
+    foreach ($group in $script:LeadTimeSizeGroups) { if ($group.Id -eq $GroupId) { return $group.Label } }
+    throw "未知の区分です: $GroupId"
+}
+
+function Get-LeadTimeRowsTotal {
+    <# 行の Total の合計を返す。 #>
+    param([object[]]$Rows = @())
+    $total = 0
+    foreach ($row in @($Rows | Where-Object { $null -ne $_ })) { $total += [int]$row.Total }
+    return $total
+}
+
+function New-LeadTimeGroupChartsHtml {
+    <#
+    .SYNOPSIS
+        1 つの区分（全体・大・中・小）の「週単位グラフ ＋ 端の週の注記 ＋ 日単位グラフ」の HTML を作る。
+        日単位は $script:LeadTimeDailySizeGroups に含まれる区分だけ出す。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [object[]]$WeeklyRows = @(),
+        [object[]]$DailyRows = @(),
+        [int]$WeeklyYMax = 0,
+        [int]$DailyYMax = 0
+    )
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $sb = New-Object System.Text.StringBuilder
+
+    [void]$sb.Append('<h4>週単位</h4><div class="chart">')
+    [void]$sb.Append((New-LeadTimeChart -Rows $WeeklyRows -Unit 'Week' -YMax $WeeklyYMax))
+    [void]$sb.Append('</div>')
+    foreach ($row in @($WeeklyRows | Where-Object { $null -ne $_ })) {
+        if (-not [bool]$row.IsPartial) { continue }
+        $label = [datetime]::ParseExact([string]$row.WeekStart, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture)
+        [void]$sb.Append(('<p class="note">* {0} の週は {1} 日分（集計範囲の端のため）</p>' -f $label, $row.Days))
+    }
+
+    if ($script:LeadTimeDailySizeGroups -contains $GroupId) {
+        [void]$sb.Append('<h4>日単位</h4><div class="chart">')
+        [void]$sb.Append((New-LeadTimeChart -Rows $DailyRows -Unit 'Day' -YMax $DailyYMax))
+        [void]$sb.Append('</div>')
+    }
+    return $sb.ToString()
+}
+
 function New-LeadTimeChartHtml {
     <#
     .SYNOPSIS
-        週次集計の結果から、見出し・凡例・折れ線グラフ・注記・表をまとめた単一の HTML を作る。
+        週次・日次の集計結果から、見出し・凡例・グラフ（全体・大・中・小 × 週・日）・注記・表をまとめた単一の HTML を作る。
     .DESCRIPTION
-        外部リソースは読み込まない（社内ネットワークでも表示できるように）。
-        埋め込む文字列はすべて HTML エスケープする。
+        ・並び: 全体（週 → 日）→ 大（週 → 日）→ 中（週 → 日）→ 小（週 → 日）
+        ・大中小の縦軸は同じ上限（週は週どうし、日は日どうし）。全体は自分のデータだけで決める
+        ・サイズ不明の PR は全体にだけ含まれる。件数を注記し、全件サイズ不明なら大中小の代わりに案内を出す（docs\adr\ADR-0001）
+        ・数値の表は <details> で開閉式にし、最初は閉じておく
+        外部リソースは読み込まない（社内ネットワークでも表示できるように）。埋め込む文字列は HTML エスケープする。
         出力仕様: docs\06_出力仕様.md「leadtime_chart.html」
     #>
     [CmdletBinding()]
     param(
-        [object[]]$Summary = @(),
+        [object[]]$WeeklySummary = @(),
+        [object[]]$DailySummary = @(),
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)]$Range,
         [datetime]$GeneratedAt = (Get-Date)
     )
 
     $culture = [Globalization.CultureInfo]::InvariantCulture
-    $rows = @($Summary | Where-Object { $null -ne $_ })
-    $repositories = @($rows | ForEach-Object { $_.Repository } | Select-Object -Unique)
+    $weeklyRows = @($WeeklySummary | Where-Object { $null -ne $_ })
+    $dailyRows = @($DailySummary | Where-Object { $null -ne $_ })
+    $repositories = @($weeklyRows | ForEach-Object { $_.Repository } | Select-Object -Unique)
+    $sizeGroupIds = @($script:LeadTimeSizeGroups | ForEach-Object { $_.Id })
     # 曜日名は固定の配列から引く（ja-JP カルチャに依存すると、PowerShell 7 の
     # invariant-globalization モードなどでカルチャが使えず日本語にならないため）
     $dayNames = @('日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日')
@@ -419,17 +474,22 @@ function New-LeadTimeChartHtml {
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.Append('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">')
     [void]$sb.Append('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    [void]$sb.Append('<title>クローズまでの時間別 PR 件数（週次）</title><style>')
+    [void]$sb.Append('<title>クローズまでの時間別 PR 件数</title><style>')
     [void]$sb.Append(@'
 body { font-family: "Yu Gothic UI", "Meiryo", sans-serif; margin: 24px; color: #212121; background: #ffffff; }
 h1 { font-size: 20px; margin-bottom: 8px; }
 h2 { font-size: 16px; margin-top: 32px; }
+h3 { font-size: 15px; margin: 32px 0 4px; padding-top: 12px; border-top: 2px solid #e0e0e0; }
+h4 { font-size: 13px; color: #424242; margin: 14px 0 0; }
 .meta { color: #616161; font-size: 13px; margin: 2px 0; }
 .legend { list-style: none; padding: 0; display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
 .swatch { display: inline-block; width: 16px; height: 3px; vertical-align: middle; margin-right: 6px; }
 .chart { max-width: 960px; }
 .note { font-size: 12px; color: #616161; margin: 2px 0; }
 .empty { color: #c62828; font-size: 13px; }
+.unknown { color: #6d4c41; font-size: 13px; }
+details { margin-top: 20px; font-size: 13px; }
+summary { cursor: pointer; }
 table { border-collapse: collapse; font-size: 13px; margin-top: 12px; }
 th, td { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: right; }
 th { background: #f5f5f5; }
@@ -438,51 +498,80 @@ th { background: #f5f5f5; }
     [void]$sb.Append('</style></head><body>')
 
     # 見出し
-    [void]$sb.Append('<h1>クローズまでの時間別 PR 件数（週次）</h1>')
+    [void]$sb.Append('<h1>クローズまでの時間別 PR 件数</h1>')
     [void]$sb.Append(('<p class="meta">組織 / プロジェクト: {0} / {1}</p>' -f [System.Net.WebUtility]::HtmlEncode([string]$Config.Organization), [System.Net.WebUtility]::HtmlEncode([string]$Config.Project)))
     [void]$sb.Append(('<p class="meta">集計範囲: {0} 〜 {1}（完了日、{2}）／ 週の始まり: {3}</p>' -f $fromText, $toText, [System.Net.WebUtility]::HtmlEncode([string]$Config.TimeZoneId), $weekStartName))
     [void]$sb.Append('<p class="meta">対象: マージ済み（completed）の PR ／ クローズまでの時間 = 完了日時 − 作成日時</p>')
     [void]$sb.Append(('<p class="meta">作成日時: {0}</p>' -f $GeneratedAt.ToString('yyyy-MM-dd HH:mm', $culture)))
 
     foreach ($repository in $repositories) {
-        $groupRows = @($rows | Where-Object { $_.Repository -eq $repository })
+        $repoWeekly = @($weeklyRows | Where-Object { $_.Repository -eq $repository })
+        $repoDaily = @($dailyRows | Where-Object { $_.Repository -eq $repository })
         [void]$sb.Append(('<section><h2>{0}</h2>' -f [System.Net.WebUtility]::HtmlEncode([string]$repository)))
 
-        # 凡例
+        # 凡例（線の意味はすべてのグラフで同じなので 1 回だけ）
         [void]$sb.Append('<ul class="legend">')
         foreach ($bucket in $script:LeadTimeBuckets) {
             [void]$sb.Append(('<li><span class="swatch" style="background:{0}"></span>{1}</li>' -f $bucket.Color, $bucket.Label))
         }
         [void]$sb.Append('</ul>')
 
-        $total = 0
-        foreach ($row in $groupRows) { $total += [int]$row.Total }
-        if ($total -eq 0) { [void]$sb.Append('<p class="empty">対象の PR がありません</p>') }
+        $allWeekly = @($repoWeekly | Where-Object { $_.SizeGroup -eq 'All' })
+        $allDaily = @($repoDaily | Where-Object { $_.SizeGroup -eq 'All' })
+        $sizeWeekly = @($repoWeekly | Where-Object { $sizeGroupIds -contains $_.SizeGroup })
+        $sizeDaily = @($repoDaily | Where-Object { $sizeGroupIds -contains $_.SizeGroup })
+        $allTotal = Get-LeadTimeRowsTotal -Rows $allWeekly
+        $sizeTotal = Get-LeadTimeRowsTotal -Rows $sizeWeekly
+        $unknownTotal = $allTotal - $sizeTotal
 
-        [void]$sb.Append('<div class="chart">')
-        [void]$sb.Append((New-LeadTimeChartSvg -Rows $groupRows))
-        [void]$sb.Append('</div>')
+        # 全体
+        [void]$sb.Append(('<h3>全体（{0}件）</h3>' -f $allTotal))
+        if ($allTotal -eq 0) { [void]$sb.Append('<p class="empty">対象の PR がありません</p>') }
+        [void]$sb.Append((New-LeadTimeGroupChartsHtml -GroupId 'All' -WeeklyRows $allWeekly -DailyRows $allDaily))
 
-        # 端の週の注記
-        foreach ($row in $groupRows) {
-            if (-not [bool]$row.IsPartial) { continue }
-            $label = [datetime]::ParseExact([string]$row.WeekStart, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture)
-            [void]$sb.Append(('<p class="note">* {0} の週は {1} 日分（集計範囲の端のため）</p>' -f $label, $row.Days))
+        # 大・中・小（縦軸の上限をそろえる）
+        if ($allTotal -gt 0 -and $sizeTotal -eq 0) {
+            [void]$sb.Append('<p class="unknown">サイズを計算していないため、サイズ別のグラフは表示できません（<code>SizeMethod</code> を <code>Git</code> または <code>Api</code> にして実行してください）。</p>')
+        }
+        else {
+            $weeklyYMax = Get-LeadTimeMaxCount -Rows $sizeWeekly
+            $dailyYMax = Get-LeadTimeMaxCount -Rows $sizeDaily
+            foreach ($group in $script:LeadTimeSizeGroups) {
+                $groupWeekly = @($repoWeekly | Where-Object { $_.SizeGroup -eq $group.Id })
+                $groupDaily = @($repoDaily | Where-Object { $_.SizeGroup -eq $group.Id })
+                $rangeText = [System.Net.WebUtility]::HtmlEncode((Get-LeadTimeSizeGroupRangeText -GroupId $group.Id -Config $Config))
+                [void]$sb.Append(('<h3>{0}（{1}）（{2}件）</h3>' -f $group.Label, $rangeText, (Get-LeadTimeRowsTotal -Rows $groupWeekly)))
+                [void]$sb.Append((New-LeadTimeGroupChartsHtml -GroupId $group.Id -WeeklyRows $groupWeekly -DailyRows $groupDaily -WeeklyYMax $weeklyYMax -DailyYMax $dailyYMax))
+            }
+            if ($unknownTotal -gt 0) {
+                [void]$sb.Append(('<p class="unknown">※ サイズ不明の {0} 件は、サイズ別（大・中・小）のグラフに含まれていません（全体には含まれます）。</p>' -f $unknownTotal))
+            }
         }
 
-        # 表
-        [void]$sb.Append('<table><thead><tr><th class="left">週の開始日</th><th class="left">期間</th><th>日数</th>')
+        # 数値の表（週単位）
+        [void]$sb.Append('<details><summary>数値の表（週単位）</summary><table><thead><tr><th class="left">週の開始日</th><th class="left">期間</th><th>日数</th><th class="left">区分</th>')
         foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<th>{0}</th>' -f $bucket.Label)) }
         [void]$sb.Append('<th>合計</th></tr></thead><tbody>')
-        foreach ($row in $groupRows) {
+        foreach ($row in $repoWeekly) {
             $first = [datetime]::ParseExact([string]$row.WeekStart, 'yyyy-MM-dd', $culture)
             if ($Range.FromLocal -gt $first) { $first = $Range.FromLocal }
             $last = [datetime]::ParseExact([string]$row.WeekEnd, 'yyyy-MM-dd', $culture)
-            [void]$sb.Append(('<tr><td class="left">{0}</td><td class="left">{1}〜{2}</td><td>{3}</td>' -f $row.WeekStart, $first.ToString('MM/dd', $culture), $last.ToString('MM/dd', $culture), $row.Days))
+            [void]$sb.Append(('<tr><td class="left">{0}</td><td class="left">{1}〜{2}</td><td>{3}</td><td class="left">{4}</td>' -f $row.WeekStart, $first.ToString('MM/dd', $culture), $last.ToString('MM/dd', $culture), $row.Days, (Get-LeadTimeGroupLabel -GroupId $row.SizeGroup)))
             foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<td>{0}</td>' -f $row.($bucket.Id))) }
             [void]$sb.Append(('<td>{0}</td></tr>' -f $row.Total))
         }
-        [void]$sb.Append('</tbody></table></section>')
+        [void]$sb.Append('</tbody></table></details>')
+
+        # 数値の表（日単位）
+        [void]$sb.Append('<details><summary>数値の表（日単位）</summary><table><thead><tr><th class="left">日付</th><th class="left">区分</th>')
+        foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<th>{0}</th>' -f $bucket.Label)) }
+        [void]$sb.Append('<th>合計</th></tr></thead><tbody>')
+        foreach ($row in $repoDaily) {
+            [void]$sb.Append(('<tr><td class="left">{0}</td><td class="left">{1}</td>' -f $row.Date, (Get-LeadTimeGroupLabel -GroupId $row.SizeGroup)))
+            foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<td>{0}</td>' -f $row.($bucket.Id))) }
+            [void]$sb.Append(('<td>{0}</td></tr>' -f $row.Total))
+        }
+        [void]$sb.Append('</tbody></table></details></section>')
     }
 
     [void]$sb.Append('</body></html>')

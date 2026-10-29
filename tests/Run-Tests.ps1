@@ -424,19 +424,18 @@ function Assert-Contains {
 It 'HTML: 見出し・凡例・グラフ・注記・表があり、記号はエスケープされる' {
     $d = New-LeadTimeTestData
     $d.Config.Project = 'P<&>'
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
-    $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range -GeneratedAt ([datetime]'2026-10-09 10:00')
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $html = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range -GeneratedAt ([datetime]'2026-10-09 10:00')
     Assert-Contains $html '<meta charset="utf-8">'
-    Assert-Contains $html '<h1>クローズまでの時間別 PR 件数（週次）</h1>'
+    Assert-Contains $html '<h1>クローズまでの時間別 PR 件数</h1>'
     Assert-Contains $html '2026-09-03 〜 2026-09-30'
     Assert-Contains $html 'P&lt;&amp;&gt;'
     if ($html.Contains('P<&>')) { throw 'プロジェクト名がエスケープされていない' }
     Assert-Contains $html '<h2>RepoA</h2>'
     Assert-Contains $html '24〜72時間未満'
-    Assert-Contains $html '<svg '
     Assert-Contains $html '* 08/31 の週は 4 日分'
     Assert-Contains $html '* 09/28 の週は 3 日分'
-    Assert-Contains $html '<table>'
     Assert-Contains $html '<td class="left">2026-09-14</td>'
     if ($html.Contains('対象の PR がありません')) { throw 'PR があるのに「対象の PR がありません」が出ている' }
 
@@ -449,20 +448,66 @@ It 'HTML: 見出し・凡例・グラフ・注記・表があり、記号はエ�
 }
 It 'HTML: 対象の PR が 0 件でもグラフを出し、その旨を表示する' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records @() -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
-    $html = New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range
+    $weekly = @(Get-LeadTimeWeeklySummary -Records @() -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records @() -Config $d.Config -Range $d.Range)
+    $html = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range
+    Assert-Contains $html '<h3>全体（0件）</h3>'
     Assert-Contains $html '対象の PR がありません'
     Assert-Contains $html '<svg '
 }
 
 It 'HTML: 週の始まりの曜日名が設定どおりに日本語で出る（既定は月曜日）' {
     $d = New-LeadTimeTestData
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
-    Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 月曜日'
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Contains (New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range) '週の始まり: 月曜日'
 
     $d.Config.WeekStartDay = 'Sunday'
-    $rows = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range | Where-Object { $_.SizeGroup -eq 'All' })
-    Assert-Contains (New-LeadTimeChartHtml -Summary $rows -Config $d.Config -Range $d.Range) '週の始まり: 日曜日'
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Contains (New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range) '週の始まり: 日曜日'
+}
+
+function New-LeadTimeTestHtml {
+    # New-LeadTimeTestData から HTML を作る（$Mutate で明細を書き換えられる）
+    param([scriptblock]$Mutate = {})
+    $d = New-LeadTimeTestData
+    foreach ($record in $d.Records) { & $Mutate $record }
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    return (New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range)
+}
+
+It 'HTML: 全体→大→中→小 の順に、それぞれ週単位→日単位のグラフが並ぶ' {
+    $html = New-LeadTimeTestHtml
+    Assert-Equal 8 (Measure-Match $html '<svg ')
+    Assert-Equal 4 (Measure-Match $html '<h4>週単位</h4>')
+    Assert-Equal 4 (Measure-Match $html '<h4>日単位</h4>')
+    $headings = @('<h3>全体（4件）</h3>', '<h3>大（L・XL：251行〜）（1件）</h3>', '<h3>中（M：51〜250行）（1件）</h3>', '<h3>小（XS・S：〜50行）（1件）</h3>')
+    $positions = @($headings | ForEach-Object { $html.IndexOf($_) })
+    for ($i = 0; $i -lt $positions.Count; $i++) { if ($positions[$i] -lt 0) { throw "見出しが無い: $($headings[$i])" } }
+    for ($i = 1; $i -lt $positions.Count; $i++) { if ($positions[$i] -le $positions[$i - 1]) { throw "並び順が違う: $($headings[$i])" } }
+    $weekPos = $html.IndexOf('<h4>週単位</h4>')
+    $dayPos = $html.IndexOf('<h4>日単位</h4>')
+    if (-not ($positions[0] -lt $weekPos -and $weekPos -lt $dayPos -and $dayPos -lt $positions[1])) { throw '全体の中が 週単位 → 日単位 の順になっていない' }
+}
+It 'HTML: サイズ不明の件数を注記する' {
+    $html = New-LeadTimeTestHtml
+    Assert-Contains $html '※ サイズ不明の 1 件は、サイズ別（大・中・小）のグラフに含まれていません（全体には含まれます）。'
+}
+It 'HTML: 全件サイズ不明なら大中小のグラフの代わりに案内を出す' {
+    $html = New-LeadTimeTestHtml -Mutate { param($r) $r.SizeCategory = '' }
+    Assert-Contains $html 'サイズを計算していないため、サイズ別のグラフは表示できません'
+    Assert-Equal 2 (Measure-Match $html '<svg ')
+    if ($html.Contains('<h3>大')) { throw '全件サイズ不明なのに大のグラフがある' }
+    if ($html.Contains('※ サイズ不明')) { throw '案内と注記が両方出ている' }
+}
+It 'HTML: 数値の表は開閉式（週単位・日単位）' {
+    $html = New-LeadTimeTestHtml
+    Assert-Equal 2 (Measure-Match $html '<details>')
+    Assert-Contains $html '<summary>数値の表（週単位）</summary>'
+    Assert-Contains $html '<summary>数値の表（日単位）</summary>'
+    Assert-Contains $html '<td class="left">2026-09-30</td><td class="left">小</td>'
 }
 
 It 'グラフは DateBasis=Closed のときだけ作る' {

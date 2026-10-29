@@ -263,9 +263,10 @@ try {
     if (Test-LeadTimeChartEnabled -Config $config) {
         try {
             $leadTimeWeekly = Get-LeadTimeWeeklySummary -Records $sortedRecords -Config $config -Range $range
+            $leadTimeDaily = Get-LeadTimeDailySummary -Records $sortedRecords -Config $config -Range $range
             Export-PrMetricsCsv -Data $leadTimeWeekly -Path (Join-Path $outputDir 'summary_leadtime_weekly.csv')
-            # HTML は全体のグラフを描くため、全体の行だけを渡す
-            $chartHtml = New-LeadTimeChartHtml -Summary @($leadTimeWeekly | Where-Object { $_.SizeGroup -eq 'All' }) -Config $config -Range $range
+            Export-PrMetricsCsv -Data $leadTimeDaily -Path (Join-Path $outputDir 'summary_leadtime_daily.csv')
+            $chartHtml = New-LeadTimeChartHtml -WeeklySummary $leadTimeWeekly -DailySummary $leadTimeDaily -Config $config -Range $range
             Export-PrMetricsHtml -Html $chartHtml -Path (Join-Path $outputDir 'leadtime_chart.html')
         }
         catch {
