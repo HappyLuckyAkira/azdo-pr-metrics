@@ -82,3 +82,119 @@ function Get-PrFlowDailySummary {
     }
     return $rows.ToArray()
 }
+
+# 棒の定義。順序がそのまま 1 日の中の並び（左から）と凡例・表の列の順になる。
+# 色は折れ線（緑・オレンジ・赤）と区別できる 3 色。並び順が固定なので白黒でも区別できる。
+$script:PrFlowSeries = @(
+    [pscustomobject]@{ Id = 'Created'; Label = '作成';  Color = '#1565c0' }
+    [pscustomobject]@{ Id = 'Open';    Label = '滞留';  Color = '#8e24aa' }
+    [pscustomobject]@{ Id = 'Closed';  Label = 'Close'; Color = '#00897b' }
+)
+
+function New-PrFlowBarChartSvg {
+    <#
+    .SYNOPSIS
+        日次の作成・滞留・Close の行から、1 日 3 本の棒を並べた棒グラフを SVG 文字列で作る。
+    .DESCRIPTION
+        ・1 日の枠の 75% に 3 本の棒を隙間なく並べ、残り 25% を日と日の間の空白にする
+        ・横軸: 日付(MM/dd)。最大 12 個になるようラベルを間引く。縦軸: 件数（0 始まり、整数の目盛り）
+        ・各棒に <title> を付け、マウスを重ねると値が出る
+        行が 0 件なら空文字を返す。
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Rows = @(),
+        [int]$Width = 900,
+        [int]$Height = 360
+    )
+
+    $items = @($Rows | Where-Object { $null -ne $_ })
+    if ($items.Count -eq 0) { return '' }
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $left = 50; $right = 20; $top = 20; $bottom = 50
+    $plotWidth = $Width - $left - $right
+    $plotHeight = $Height - $top - $bottom
+    $count = $items.Count
+
+    $maxValue = 0
+    foreach ($item in $items) {
+        foreach ($series in $script:PrFlowSeries) {
+            if ([int]$item.($series.Id) -gt $maxValue) { $maxValue = [int]$item.($series.Id) }
+        }
+    }
+    $yAxis = Get-ChartYAxis -MaxValue $maxValue
+    $yMaxValue = $yAxis.Max
+    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMaxValue }.GetNewClosure()
+
+    $slotWidth = $plotWidth / $count
+    $groupWidth = $slotWidth * 0.75
+    $barWidth = $groupWidth / $script:PrFlowSeries.Count
+    $labels = @($items | ForEach-Object { [datetime]::ParseExact([string]$_.Date, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture) })
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append(('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {0} {1}" width="100%" role="img" aria-label="PR の作成・滞留・Close の日次推移" font-family="sans-serif">' -f $Width, $Height))
+    [void]$sb.Append((New-ChartYAxisSvg -YAxis $yAxis -ToY $toY -Left $left -Right $right -Width $Width))
+
+    # 横軸ラベル（間引き）。1 日の枠の中央に置く
+    $labelEvery = [int][math]::Max(1, [math]::Ceiling($count / 12))
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($i % $labelEvery -ne 0) { continue }
+        [void]$sb.Append(('<text class="x-label" x="{0}" y="{1}" text-anchor="middle" font-size="12" fill="#616161">{2}</text>' -f (Format-SvgNumber ($left + $slotWidth * ($i + 0.5))), ($Height - $bottom + 20), $labels[$i]))
+    }
+
+    # 棒（日ごとに 作成 → 滞留 → Close）
+    $baseY = & $toY 0
+    for ($i = 0; $i -lt $count; $i++) {
+        $groupLeft = $left + $slotWidth * $i + ($slotWidth - $groupWidth) / 2
+        for ($k = 0; $k -lt $script:PrFlowSeries.Count; $k++) {
+            $series = $script:PrFlowSeries[$k]
+            $value = [int]$items[$i].($series.Id)
+            $y = & $toY $value
+            $title = [System.Net.WebUtility]::HtmlEncode(('{0} {1}: {2}件' -f $labels[$i], $series.Label, $value))
+            [void]$sb.Append(('<rect class="bar bar-{0}" x="{1}" y="{2}" width="{3}" height="{4}" fill="{5}"><title>{6}</title></rect>' -f `
+                        $series.Id, (Format-SvgNumber ($groupLeft + $barWidth * $k)), (Format-SvgNumber $y), (Format-SvgNumber $barWidth), (Format-SvgNumber ($baseY - $y)), $series.Color, $title))
+        }
+    }
+
+    [void]$sb.Append('</svg>')
+    return $sb.ToString()
+}
+
+function New-PrFlowSectionHtml {
+    <#
+    .SYNOPSIS
+        leadtime_chart.html の各リポジトリの最後に入れる「PR の作成・滞留・Close（日単位）」の節を作る。
+        -Available が $false のとき（データを取得できなかったとき）は、表示できない旨だけを出す。
+    #>
+    param(
+        [object[]]$Rows = @(),
+        [bool]$Available = $true
+    )
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('<h3>PR の作成・滞留・Close（日単位）</h3>')
+    if (-not $Available) {
+        [void]$sb.Append('<p class="unknown">PR の作成・滞留・Close のデータを取得できなかったため、このグラフは表示できません。</p>')
+        return $sb.ToString()
+    }
+
+    [void]$sb.Append('<p class="note">作成: その日に作成された PR ／ 滞留: その日の終わりに開いている PR ／ Close: その日にマージまたは破棄された PR（Draft・マージ先ブランチ・作成者の絞り込みは設定どおり）</p>')
+    [void]$sb.Append('<ul class="legend">')
+    foreach ($series in $script:PrFlowSeries) {
+        [void]$sb.Append(('<li><span class="swatch" style="background:{0};height:10px"></span>{1}</li>' -f $series.Color, $series.Label))
+    }
+    [void]$sb.Append('</ul><div class="chart">')
+    [void]$sb.Append((New-PrFlowBarChartSvg -Rows $Rows))
+    [void]$sb.Append('</div>')
+
+    [void]$sb.Append('<details><summary>数値の表（PR の作成・滞留・Close）</summary><table><thead><tr><th class="left">日付</th>')
+    foreach ($series in $script:PrFlowSeries) { [void]$sb.Append(('<th>{0}</th>' -f $series.Label)) }
+    [void]$sb.Append('</tr></thead><tbody>')
+    foreach ($row in @($Rows | Where-Object { $null -ne $_ })) {
+        [void]$sb.Append(('<tr><td class="left">{0}</td>' -f $row.Date))
+        foreach ($series in $script:PrFlowSeries) { [void]$sb.Append(('<td>{0}</td>' -f $row.($series.Id))) }
+        [void]$sb.Append('</tr>')
+    }
+    [void]$sb.Append('</tbody></table></details>')
+    return $sb.ToString()
+}

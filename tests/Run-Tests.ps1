@@ -622,6 +622,64 @@ It '追加取得: active は期間なし、completed・abandoned はクローズ
     Assert-Equal '4,1,2,3' (($prs | ForEach-Object { $_.pullRequestId }) -join ',')
     Assert-Equal 'active|Created|False|True,completed|Closed|True|True,abandoned|Closed|True|True' ($calls -join ',')
 }
+function Get-SvgBars {
+    # 棒（<rect class="bar ...">）の x と width を数値で取り出す
+    param([string]$Svg)
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    foreach ($m in [regex]::Matches($Svg, '<rect class="bar[^"]*" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"')) {
+        [pscustomobject]@{ X = [double]::Parse($m.Groups[1].Value, $culture); W = [double]::Parse($m.Groups[2].Value, $culture) }
+    }
+}
+
+It '棒グラフ: 1 日 3 本（作成・滞留・Close）を隙間なく並べ、日と日の間に空白を入れる' {
+    $rows = @(
+        [pscustomobject]@{ Repository = 'RepoA'; Date = '2026-09-07'; Created = 1; Open = 2; Closed = 1 }
+        [pscustomobject]@{ Repository = 'RepoA'; Date = '2026-09-08'; Created = 1; Open = 1; Closed = 2 }
+        [pscustomobject]@{ Repository = 'RepoA'; Date = '2026-09-09'; Created = 0; Open = 2; Closed = 0 }
+    )
+    $svg = New-PrFlowBarChartSvg -Rows $rows
+    $bars = @(Get-SvgBars $svg)
+    Assert-Equal 9 $bars.Count '（3 日 × 3 本）'
+    if ([math]::Abs(($bars[0].X + $bars[0].W) - $bars[1].X) -gt 0.02) { throw '同じ日の 1 本目と 2 本目の間に隙間がある' }
+    if ([math]::Abs(($bars[1].X + $bars[1].W) - $bars[2].X) -gt 0.02) { throw '同じ日の 2 本目と 3 本目の間に隙間がある' }
+    $gap = $bars[3].X - ($bars[2].X + $bars[2].W)
+    if ($gap -lt 10) { throw "日と日の間の空白が小さい: $gap" }
+    Assert-Contains $svg 'class="bar bar-Created"'
+    Assert-Contains $svg '<title>09/07 滞留: 2件</title>'
+    Assert-Contains $svg '<title>09/08 Close: 2件</title>'
+    Assert-Contains $svg '>09/09</text>'
+    Assert-Equal '' (New-PrFlowBarChartSvg -Rows @())
+}
+It 'HTML: 作成・滞留・Close の棒グラフは各リポジトリの最後（数値の表の後）に入る' {
+    $d = New-LeadTimeTestData
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $flow = @(
+        [pscustomobject]@{ Repository = 'RepoA'; Date = '2026-09-03'; Created = 2; Open = 5; Closed = 1 }
+        [pscustomobject]@{ Repository = 'RepoA'; Date = '2026-09-04'; Created = 0; Open = 4; Closed = 1 }
+    )
+    $html = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range -FlowSummary $flow
+    $flowPos = $html.IndexOf('<h3>PR の作成・滞留・Close（日単位）</h3>')
+    if ($flowPos -lt 0) { throw '見出しが無い' }
+    if ($flowPos -lt $html.IndexOf('<summary>数値の表（日単位）</summary>')) { throw '数値の表より前にある' }
+    if ($flowPos -gt $html.IndexOf('</section>')) { throw 'リポジトリの節の外にある' }
+    Assert-Contains $html '作成</li>'
+    Assert-Contains $html '滞留</li>'
+    Assert-Contains $html 'Close</li>'
+    Assert-Contains $html '<summary>数値の表（PR の作成・滞留・Close）</summary>'
+    Assert-Contains $html '<td class="left">2026-09-03</td><td>2</td><td>5</td><td>1</td>'
+    Assert-Equal 6 (Measure-Match $html '<rect class="bar')
+}
+It 'HTML: 作成・滞留・Close のデータが無いときは表示できない旨を出し、指定しなければ節を出さない' {
+    $d = New-LeadTimeTestData
+    $weekly = @(Get-LeadTimeWeeklySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $daily = @(Get-LeadTimeDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    $html = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range -FlowSummary @()
+    Assert-Contains $html 'PR の作成・滞留・Close のデータを取得できなかったため、このグラフは表示できません。'
+    Assert-Equal 0 (Measure-Match $html '<rect class="bar')
+    $html2 = New-LeadTimeChartHtml -WeeklySummary $weekly -DailySummary $daily -Config $d.Config -Range $d.Range
+    if ($html2.Contains('PR の作成・滞留・Close')) { throw '指定していないのに節がある' }
+}
 
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false

@@ -263,6 +263,32 @@ function New-LeadTimeMarkerSvg {
     }
 }
 
+function Get-ChartYAxis {
+    <# 縦軸の刻みと上限を決める（目盛り 5 本前後になる整数の刻み。0 件でも上限は 1 以上）。 #>
+    param([int]$MaxValue)
+    $step = [int][math]::Max(1, [math]::Ceiling($MaxValue / 5))
+    [pscustomobject]@{ Step = $step; Max = $step * [int][math]::Max(1, [math]::Ceiling($MaxValue / $step)) }
+}
+
+function New-ChartYAxisSvg {
+    <# 目盛り線・縦軸ラベル・0 の線（横軸）を SVG 文字列で返す。折れ線と棒グラフで共通。 #>
+    param(
+        [Parameter(Mandatory)]$YAxis,
+        [Parameter(Mandatory)][scriptblock]$ToY,
+        [int]$Left,
+        [int]$Right,
+        [int]$Width
+    )
+    $sb = New-Object System.Text.StringBuilder
+    for ($v = 0; $v -le $YAxis.Max; $v += $YAxis.Step) {
+        $y = Format-SvgNumber (& $ToY $v)
+        [void]$sb.Append(('<line class="grid" x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#e0e0e0"/>' -f $Left, $y, ($Width - $Right)))
+        [void]$sb.Append(('<text class="y-label" x="{0}" y="{1}" text-anchor="end" font-size="12" fill="#616161">{2}</text>' -f ($Left - 8), (Format-SvgNumber ((& $ToY $v) + 4)), $v))
+    }
+    [void]$sb.Append(('<line x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#9e9e9e"/>' -f $Left, (Format-SvgNumber (& $ToY 0)), ($Width - $Right)))
+    return $sb.ToString()
+}
+
 function Get-LeadTimeMaxCount {
     <# 行の 3 区分の件数の最大値を返す（縦軸の上限をそろえるために使う）。行が無ければ 0。 #>
     param([object[]]$Rows = @())
@@ -310,15 +336,15 @@ function New-LeadTimeChartSvg {
 
     # 縦軸の上限: 目盛り 5 本前後になる整数の刻み
     $maxValue = [math]::Max([math]::Max(0, $YMax), (Get-LeadTimeMaxCount -Rows $items))
-    $step = [int][math]::Max(1, [math]::Ceiling($maxValue / 5))
-    $yMaxValue = $step * [int][math]::Max(1, [math]::Ceiling($maxValue / $step))
+    $yAxis = Get-ChartYAxis -MaxValue $maxValue
+    $yMaxValue = $yAxis.Max
 
     $xs = New-Object 'double[]' $count
     for ($i = 0; $i -lt $count; $i++) {
         if ($count -eq 1) { $xs[$i] = $left + $plotWidth / 2 }
         else { $xs[$i] = $left + $plotWidth * $i / ($count - 1) }
     }
-    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMaxValue }
+    $toY = { param([double]$v) $top + $plotHeight - $plotHeight * $v / $yMaxValue }.GetNewClosure()
     $labels = @($items | ForEach-Object { [datetime]::ParseExact([string]$_.$dateField, 'yyyy-MM-dd', $culture).ToString('MM/dd', $culture) })
     # 端の週の扱い（白抜き・*）は週単位だけ
     $partials = @($items | ForEach-Object { ($Unit -eq 'Week') -and [bool]$_.IsPartial })
@@ -327,12 +353,7 @@ function New-LeadTimeChartSvg {
     [void]$sb.Append(('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {0} {1}" width="100%" role="img" aria-label="クローズまでの時間別 PR 件数の{2}推移" font-family="sans-serif">' -f $Width, $Height, $unitText))
 
     # 目盛り線と縦軸ラベル
-    for ($v = 0; $v -le $yMaxValue; $v += $step) {
-        $y = Format-SvgNumber (& $toY $v)
-        [void]$sb.Append(('<line class="grid" x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#e0e0e0"/>' -f $left, $y, ($Width - $right)))
-        [void]$sb.Append(('<text class="y-label" x="{0}" y="{1}" text-anchor="end" font-size="12" fill="#616161">{2}</text>' -f ($left - 8), (Format-SvgNumber ((& $toY $v) + 4)), $v))
-    }
-    [void]$sb.Append(('<line x1="{0}" y1="{1}" x2="{2}" y2="{1}" stroke="#9e9e9e"/>' -f $left, (Format-SvgNumber (& $toY 0)), ($Width - $right)))
+    [void]$sb.Append((New-ChartYAxisSvg -YAxis $yAxis -ToY $toY -Left $left -Right $right -Width $Width))
 
     # 横軸ラベル（間引き）
     $labelEvery = [int][math]::Max(1, [math]::Ceiling($count / 12))
@@ -449,6 +470,7 @@ function New-LeadTimeChartHtml {
         ・サイズ不明の PR は全体にだけ含まれる。件数を注記し、全件サイズ不明なら大中小の代わりに案内を出す（docs\adr\ADR-0001）
         ・数値の表は <details> で開閉式にし、最初は閉じておく
         外部リソースは読み込まない（社内ネットワークでも表示できるように）。埋め込む文字列は HTML エスケープする。
+        ・-FlowSummary を指定したときは、各リポジトリの最後に PR の作成・滞留・Close の棒グラフを入れる（src\PrFlowChart.ps1）
         出力仕様: docs\06_出力仕様.md「leadtime_chart.html」
     #>
     [CmdletBinding()]
@@ -457,7 +479,10 @@ function New-LeadTimeChartHtml {
         [object[]]$DailySummary = @(),
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)]$Range,
-        [datetime]$GeneratedAt = (Get-Date)
+        [datetime]$GeneratedAt = (Get-Date),
+        # 指定したときだけ、各リポジトリの最後に「PR の作成・滞留・Close（日単位）」の節を入れる（Get-PrFlowDailySummary の行）。
+        # 空配列を渡すと「データを取得できなかった」として扱う。
+        [object[]]$FlowSummary
     )
 
     $culture = [Globalization.CultureInfo]::InvariantCulture
@@ -572,7 +597,14 @@ th { background: #f5f5f5; }
             foreach ($bucket in $script:LeadTimeBuckets) { [void]$sb.Append(('<td>{0}</td>' -f $row.($bucket.Id))) }
             [void]$sb.Append(('<td>{0}</td></tr>' -f $row.Total))
         }
-        [void]$sb.Append('</tbody></table></details></section>')
+        [void]$sb.Append('</tbody></table></details>')
+
+        # PR の作成・滞留・Close（日単位）
+        if ($PSBoundParameters.ContainsKey('FlowSummary')) {
+            $flowRows = @($FlowSummary | Where-Object { $null -ne $_ -and $_.Repository -eq $repository })
+            [void]$sb.Append((New-PrFlowSectionHtml -Rows $flowRows -Available ($flowRows.Count -gt 0)))
+        }
+        [void]$sb.Append('</section>')
     }
 
     [void]$sb.Append('</body></html>')
