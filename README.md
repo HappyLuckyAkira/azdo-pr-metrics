@@ -36,6 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Invoke-PrMetrics.ps1
 | `summary_by_author.csv` | 作成者ごとの PR 件数・週あたり件数・中央値 |
 | `summary_leadtime_weekly.csv` | マージ済み PR の、クローズまでの時間（24時間未満 / 24〜72時間未満 / 72時間以上）別の週次件数（全体・大・中・小） |
 | `summary_leadtime_daily.csv` | 同じく日次件数（全体・大・中・小） |
+| `summary_pr_flow_daily.csv` | 日ごとの PR の作成数・滞留数・Close 数 |
 | `leadtime_chart.html` | 上記の折れ線グラフ（ブラウザで開く。下の「グラフの見方」を参照） |
 | `run_info.json` | 実行条件の記録（期間・設定・件数） |
 
@@ -89,9 +90,23 @@ Invoke-Item (Join-Path (Get-ChildItem .\output -Directory | Sort-Object Name | S
 - 全件のサイズが分からない場合は、大・中・小のグラフの代わりに「サイズを計算していないため…」と表示されます。`SizeMethod` を `Git` または `Api` にして実行してください。
 - こう決めた理由は [ADR-0001](docs/adr/ADR-0001-サイズ不明のPRの扱い.md) を参照してください。
 
+### PR の作成・滞留・Close（棒グラフ）
+
+各リポジトリの最後に、日ごとに 3 本の棒が並んだグラフがあります（日と日の間は空白）。
+
+| 棒（左から） | 意味 |
+|---|---|
+| 作成（青） | その日に作成された PR の数 |
+| 滞留（紫） | その日の終わりに開いている（まだマージも破棄もされていない）PR の数。前の日から残っている PR も含みます |
+| Close（緑がかった青） | その日にマージまたは破棄された PR の数 |
+
+- 「滞留」が日を追って増えているときは、作成のペースにレビュー・マージが追いついていないサインです。
+- 数え方と、このグラフのために追加で PR を取得している理由は [ADR-0003](docs/adr/ADR-0003-PRの作成・滞留・Closeの数え方.md) を参照してください。
+- データを取得できなかったときは、グラフの代わりに「このグラフは表示できません」と表示されます（他のグラフには影響しません）。
+
 ### グラフが作られないとき
 
-グラフと 2 つの CSV（週次・日次）は、設定の `DateBasis` が `'Closed'`（既定）のときだけ作られます。それ以外では警告が表示され、ほかの出力だけが作られます。
+グラフと 3 つの CSV（週次・日次・作成/滞留/Close）は、設定の `DateBasis` が `'Closed'`（既定）のときだけ作られます。それ以外では警告が表示され、ほかの出力だけが作られます。
 
 ---
 
@@ -129,7 +144,8 @@ pr-metrics/
 │   ├─ SizeCalculator.ps1      … PR サイズ計算（Git / Api 方式）
 │   ├─ Aggregator.ps1          … レコード化・期間別/作成者別の集計
 │   ├─ Output.ps1              … CSV/JSON/HTML 出力・画面表示
-│   └─ LeadTimeChart.ps1       … クローズまでの時間区分別の集計（週次・日次 × 全体・大中小）・グラフ
+│   ├─ LeadTimeChart.ps1       … クローズまでの時間区分別の集計（週次・日次 × 全体・大中小）・グラフ
+│   └─ PrFlowChart.ps1         … PR の作成・滞留・Close の日次集計・棒グラフ
 ├─ tests/Run-Tests.ps1         … 単体テスト（接続不要）
 ├─ docs/                       … 設計資料（docs/adr/ は設計判断の記録）
 └─ AGENTS.md                   … AI コーディングエージェント（Copilot など）向けの作業ルール

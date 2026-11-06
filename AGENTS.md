@@ -48,7 +48,8 @@ Get-ChildItem -Recurse -Include *.ps1,*.psd1 | ForEach-Object { '{0} {1}' -f ((G
 | `src/Aggregator.ps1` | 対象判定・明細レコード化・期間別/作成者別集計 | docs/05 5 章 |
 | `src/Output.ps1` | CSV/JSON/HTML の入出力・画面表示 | docs/05 6 章 |
 | `src/LeadTimeChart.ps1` | クローズまでの時間区分別の集計（週次・日次 × 全体・大中小）・折れ線グラフ（SVG/HTML） | docs/05 7 章 |
-| `tests/Run-Tests.ps1` | 単体テスト（自作の簡易ランナー） | docs/05 8 章 |
+| `src/PrFlowChart.ps1` | PR の作成・滞留・Close の日次集計・棒グラフ（SVG/HTML の節） | docs/05 8 章 |
+| `tests/Run-Tests.ps1` | 単体テスト（自作の簡易ランナー） | docs/05 9 章 |
 | `docs/01〜09` | 要件・設計・API・設定・出力・確認手順・トラブル・Copilot ガイド | — |
 | `docs/adr/` | 設計判断の記録（ADR）。1 判断 1 ファイル | — |
 

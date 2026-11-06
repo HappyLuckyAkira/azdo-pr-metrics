@@ -148,6 +148,20 @@ GET {base}/_apis/git/repositories/{repositoryId}/pullrequests?api-version=7.1
 ⚠ **要確認**: 一覧のレスポンスに `lastMergeCommit` などが含まれるか。含まれない場合、ツールは PR 個別取得（4 章）で補う（その分遅くなる）。
 ⚠ **要確認**: squash でマージされた PR の `lastMergeCommit` が、マージ先ブランチの履歴上の squash コミットと一致するか。
 
+### 3.3 作成・滞留・Close のグラフ用の追加取得
+
+`leadtime_chart.html` を作るとき（`DateBasis='Closed'`）だけ、リポジトリごとに同じ PR 一覧 API を次の条件で追加で呼ぶ（`Get-AzDoPullRequestsForFlow`）。既存の取得とは別で、既存の出力には使わない。
+
+| 呼び出し | `searchCriteria.status` | 期間の指定 |
+|---|---|---|
+| 1 | `active` | なし（全件） |
+| 2 | `completed` | `queryTimeRangeType=closed`、`minTime` = 集計範囲の開始、`maxTime` = 実行時点の翌日 |
+| 3 | `abandoned` | 2 と同じ |
+
+- 同じ `pullRequestId` は 1 件にまとめる。
+- `UseServerSideDateFilter=$false` のときは 2・3 も期間を指定せず全件取得する（遅くなるが、数え方は変わらない）。
+- 理由: [ADR-0003](adr/ADR-0003-PRの作成・滞留・Closeの数え方.md)
+
 ---
 
 ## 4. PR 個別取得
