@@ -51,7 +51,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $toolRoot = $PSScriptRoot
-foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1')) {
+foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1', 'PrFlowChart.ps1')) {
     . (Join-Path (Join-Path $toolRoot 'src') $file)
 }
 
@@ -176,6 +176,9 @@ try {
     $webBaseUrl = Get-WebBaseUrl -Config $config
     $records = New-Object System.Collections.Generic.List[object]
     $repoStats = New-Object System.Collections.Generic.List[object]
+    # PR の作成・滞留・Close のグラフ用（追加取得した PR の記録）。1 つでも取得に失敗したらグラフは「表示できません」にする
+    $flowRecords = New-Object System.Collections.Generic.List[object]
+    $flowAvailable = $true
 
     foreach ($repo in $config.Repositories) {
         Write-Log "[$repo] PR 一覧を取得します" -Level Step
@@ -202,6 +205,35 @@ try {
         # ---- 2. 対象の絞り込み ----
         $targetPrs = @($rawPrs | Where-Object { Test-PullRequestIncluded -PullRequest $_ -Config $config -Range $range })
         Write-Log "[$repo] 取得 $(@($rawPrs).Count) 件 → 対象 $($targetPrs.Count) 件"
+
+        # ---- 2b. PR の作成・滞留・Close のグラフ用の追加取得（グラフを作るときだけ。既存の集計には使わない）----
+        if ($flowAvailable -and (Test-LeadTimeChartEnabled -Config $config)) {
+            try {
+                $flowFileName = "raw_pullrequests_flow_$repo.json"
+                if ($ReplayDir) {
+                    $flowReplayPath = Join-Path $ReplayDir $flowFileName
+                    if (-not (Test-Path -LiteralPath $flowReplayPath)) {
+                        throw "$flowReplayPath がありません（SaveRawJson=`$true で実行した出力フォルダを -ReplayDir に指定してください）"
+                    }
+                    $flowRaw = @(Import-PrMetricsRawJson -Path $flowReplayPath)
+                }
+                else {
+                    $flowRaw = @(Get-AzDoPullRequestsForFlow -Context $context -Repository $repo -FromUtc $range.FromUtc `
+                            -PageSize $config.PageSize -ServerSideDateFilter $config.UseServerSideDateFilter)
+                    if ($config.SaveRawJson) { Export-PrMetricsJson -Data $flowRaw -Path (Join-Path $outputDir $flowFileName) }
+                }
+                foreach ($pr in $flowRaw) {
+                    if (-not (Test-PullRequestFilterMatch -PullRequest $pr -Config $config)) { continue }
+                    $flowRecord = ConvertTo-PrFlowRecord -PullRequest $pr -Repository $repo -TimeZone $timeZone
+                    if ($null -ne $flowRecord) { $flowRecords.Add($flowRecord) }
+                }
+                Write-Log "[$repo] 作成・滞留・Close 用に $($flowRaw.Count) 件を取得"
+            }
+            catch {
+                $flowAvailable = $false
+                Write-Warning "[$repo] PR の作成・滞留・Close のグラフ用のデータを取得できませんでした（他の出力には影響しません）: $($_.Exception.Message)"
+            }
+        }
 
         # ---- 3. サイズ計算の準備 ----
         $repoPath = $null
@@ -266,7 +298,12 @@ try {
             $leadTimeDaily = Get-LeadTimeDailySummary -Records $sortedRecords -Config $config -Range $range
             Export-PrMetricsCsv -Data $leadTimeWeekly -Path (Join-Path $outputDir 'summary_leadtime_weekly.csv')
             Export-PrMetricsCsv -Data $leadTimeDaily -Path (Join-Path $outputDir 'summary_leadtime_daily.csv')
-            $chartHtml = New-LeadTimeChartHtml -WeeklySummary $leadTimeWeekly -DailySummary $leadTimeDaily -Config $config -Range $range
+            $flowSummary = @()
+            if ($flowAvailable) {
+                $flowSummary = @(Get-PrFlowDailySummary -Records $flowRecords.ToArray() -Config $config -Range $range)
+                Export-PrMetricsCsv -Data $flowSummary -Path (Join-Path $outputDir 'summary_pr_flow_daily.csv')
+            }
+            $chartHtml = New-LeadTimeChartHtml -WeeklySummary $leadTimeWeekly -DailySummary $leadTimeDaily -Config $config -Range $range -FlowSummary $flowSummary
             Export-PrMetricsHtml -Html $chartHtml -Path (Join-Path $outputDir 'leadtime_chart.html')
         }
         catch {
