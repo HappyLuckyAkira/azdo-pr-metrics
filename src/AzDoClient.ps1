@@ -209,6 +209,49 @@ function Get-AzDoPullRequests {
     return $result.ToArray()
 }
 
+function Get-AzDoPullRequestsForFlow {
+    <#
+    .SYNOPSIS
+        PR の作成・滞留・Close のグラフ用に、集計範囲のどこかの日に開いていた・作成された・クローズされた PR をすべて取得する。
+    .DESCRIPTION
+        ・いま開いている PR（active）: 期間の指定なしで全件
+        ・クローズ済み（completed / abandoned）: クローズ日時が FromUtc 以降のもの。上限は実行時点より先にして、
+          範囲の後にクローズした PR（範囲中は開いていた PR）も含める
+        同じ pullRequestId は最初の 1 件だけ残す。既存の取得（Get-AzDoPullRequests の呼び出し）には影響しない。
+        判断の記録: docs\adr\ADR-0003
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Context,
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][datetime]$FromUtc,
+        [int]$PageSize = 100,
+        [bool]$ServerSideDateFilter = $true
+    )
+
+    $untilUtc = [datetime]::UtcNow.AddDays(1)
+    $batches = @(
+        @{ Status = 'active';    DateBasis = 'Created'; ServerSide = $false }
+        @{ Status = 'completed'; DateBasis = 'Closed';  ServerSide = $ServerSideDateFilter }
+        @{ Status = 'abandoned'; DateBasis = 'Closed';  ServerSide = $ServerSideDateFilter }
+    )
+
+    $seen = @{}
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($batch in $batches) {
+        $prs = @(Get-AzDoPullRequests -Context $Context -Repository $Repository -Status $batch.Status -FromUtc $FromUtc `
+                -ToUtcExclusive $untilUtc -DateBasis $batch.DateBasis -PageSize $PageSize -ServerSideDateFilter $batch.ServerSide)
+        foreach ($pr in $prs) {
+            if ($null -eq $pr) { continue }
+            $key = [string]$pr.pullRequestId
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $result.Add($pr)
+        }
+    }
+    return $result.ToArray()
+}
+
 function Get-AzDoPullRequest {
     <# PR 1 件の詳細を取得する（一覧にマージコミット情報が無い場合の補完用）。 #>
     [CmdletBinding()]

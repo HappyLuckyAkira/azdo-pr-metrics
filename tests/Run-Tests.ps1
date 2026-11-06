@@ -601,6 +601,27 @@ It '日次の作成・滞留・Close: 複数リポジトリでは (ALL) の行�
     Assert-Equal 1 $rows[2].Created
     Assert-Equal 2 $rows[2].Open
 }
+It '追加取得: active は期間なし、completed・abandoned はクローズが開始以降（上限は実行時点より先）、重複は除く' {
+    $calls = New-Object System.Collections.Generic.List[string]
+    function Get-AzDoPullRequests {
+        param($Context, $Repository, $Status, $FromUtc, $ToUtcExclusive, $DateBasis, $PageSize, $ServerSideDateFilter)
+        $calls.Add(('{0}|{1}|{2}|{3}' -f $Status, $DateBasis, $ServerSideDateFilter, ($ToUtcExclusive -gt [datetime]::UtcNow)))
+        switch ($Status) {
+            'active' { New-FlowPr 4 '2026-09-01T00:00:00Z' -Status 'active' }
+            'completed' {
+                New-FlowPr 1 '2026-09-01T00:00:00Z' '2026-09-02T00:00:00Z'
+                New-FlowPr 2 '2026-09-01T00:00:00Z' '2026-09-03T00:00:00Z'
+            }
+            'abandoned' {
+                New-FlowPr 2 '2026-09-01T00:00:00Z' '2026-09-03T00:00:00Z' -Status 'abandoned'
+                New-FlowPr 3 '2026-09-01T00:00:00Z' '2026-09-04T00:00:00Z' -Status 'abandoned'
+            }
+        }
+    }
+    $prs = @(Get-AzDoPullRequestsForFlow -Context ([pscustomobject]@{ Name = 'dummy' }) -Repository 'RepoA' -FromUtc ([datetime]'2026-09-01') -PageSize 50 -ServerSideDateFilter $true)
+    Assert-Equal '4,1,2,3' (($prs | ForEach-Object { $_.pullRequestId }) -join ',')
+    Assert-Equal 'active|Created|False|True,completed|Closed|True|True,abandoned|Closed|True|True' ($calls -join ',')
+}
 
 Write-Host '== Git 方式（実リポジトリ）'
 $gitAvailable = $false
