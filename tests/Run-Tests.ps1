@@ -13,7 +13,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $toolRoot = Split-Path -Parent $PSScriptRoot
-foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1')) {
+foreach ($file in @('Config.ps1', 'AzDoClient.ps1', 'SizeCalculator.ps1', 'Aggregator.ps1', 'Output.ps1', 'LeadTimeChart.ps1', 'PrFlowChart.ps1')) {
     . (Join-Path (Join-Path $toolRoot 'src') $file)
 }
 
@@ -524,6 +524,82 @@ It 'HTML: リポジトリ名もエスケープされる' {
 It 'グラフは DateBasis=Closed のときだけ作る' {
     Assert-Equal $true (Test-LeadTimeChartEnabled -Config (New-TestConfig))
     Assert-Equal $false (Test-LeadTimeChartEnabled -Config (New-TestConfig @{ DateBasis = 'Created' }))
+}
+
+Write-Host '== PrFlowChart'
+function New-FlowPr {
+    # API 形式の PR（状態・作成日時・クローズ日時を指定）
+    param([int]$Id, [string]$Created, [string]$Closed = '', [string]$Status = 'completed', [string]$Author = 'Taro', [string]$Target = 'refs/heads/main', [bool]$Draft = $false)
+    $pr = New-FakePr $Id $Created $Closed -Author $Author -Target $Target -Draft $Draft
+    $pr.status = $Status
+    return $pr
+}
+
+It '絞り込みの共通化: Draft・マージ先ブランチ・除外作成者だけを見る（期間は見ない）' {
+    $c = New-TestConfig @{ TargetBranches = @('refs/heads/main'); ExcludeAuthors = @('Bot') }
+    Assert-Equal $true (Test-PullRequestFilterMatch -PullRequest (New-FlowPr 1 '2020-01-01T00:00:00Z' -Status 'active') -Config $c)
+    Assert-Equal $false (Test-PullRequestFilterMatch -PullRequest (New-FlowPr 2 '2020-01-01T00:00:00Z' -Status 'active' -Draft $true) -Config $c)
+    Assert-Equal $false (Test-PullRequestFilterMatch -PullRequest (New-FlowPr 3 '2020-01-01T00:00:00Z' -Status 'active' -Target 'refs/heads/dev') -Config $c)
+    Assert-Equal $false (Test-PullRequestFilterMatch -PullRequest (New-FlowPr 4 '2020-01-01T00:00:00Z' -Status 'active' -Author 'Bot') -Config $c)
+}
+It '作成・滞留・Close 用の記録: active はクローズなし、破棄はクローズ扱い、作成日時なしは除く' {
+    $a = ConvertTo-PrFlowRecord -PullRequest (New-FlowPr 1 '2026-09-05T01:00:00Z' -Status 'active') -Repository 'RepoA' -TimeZone $tokyo
+    Assert-Equal ([datetime]'2026-09-05 10:00') $a.CreatedLocal
+    Assert-Equal $null $a.ClosedLocal
+    $b = ConvertTo-PrFlowRecord -PullRequest (New-FlowPr 2 '2026-09-08T01:00:00Z' '2026-09-08T09:00:00Z' -Status 'abandoned') -Repository 'RepoA' -TimeZone $tokyo
+    Assert-Equal ([datetime]'2026-09-08 18:00') $b.ClosedLocal
+    Assert-Equal 'RepoA' $b.Repository
+    Assert-Equal 2 $b.PullRequestId
+    Assert-Equal 'abandoned' $b.Status
+    Assert-Equal $null (ConvertTo-PrFlowRecord -PullRequest (New-FlowPr 3 '' -Status 'active') -Repository 'RepoA' -TimeZone $tokyo)
+}
+
+function New-FlowTestData {
+    # 範囲 2026-09-07〜09-09（日本時間）
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-09' }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $prs = @(
+        New-FlowPr 1 '2026-09-05T01:00:00Z' -Status 'active'                              # A: 範囲前に作成・開いたまま
+        New-FlowPr 2 '2026-09-07T00:00:00Z' '2026-09-08T06:00:00Z'                          # B: 9/7 作成 → 9/8 マージ
+        New-FlowPr 3 '2026-09-08T01:00:00Z' '2026-09-08T09:00:00Z' -Status 'abandoned'      # C: 9/8 作成・同日破棄
+        New-FlowPr 4 '2026-09-06T01:00:00Z' '2026-09-07T14:59:00Z'                          # D: 範囲前に作成 → 9/7 23:59 マージ
+        New-FlowPr 5 '2026-09-09T00:00:00Z' '2026-09-09T16:00:00Z'                          # E: 9/9 作成 → 9/10 01:00（範囲後）マージ
+    )
+    $records = @($prs | ForEach-Object { ConvertTo-PrFlowRecord -PullRequest $_ -Repository 'RepoA' -TimeZone $tokyo })
+    return @{ Config = $config; Range = $range; Records = $records }
+}
+
+It '日次の作成・滞留・Close: 範囲前の PR・同日作成クローズ・範囲後クローズ・日付の境目' {
+    $d = New-FlowTestData
+    $rows = @(Get-PrFlowDailySummary -Records $d.Records -Config $d.Config -Range $d.Range)
+    Assert-Equal 3 $rows.Count
+    Assert-Equal 'Repository,Date,Created,Open,Closed' (($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+    Assert-Equal '2026-09-07' $rows[0].Date
+    Assert-Equal 1 $rows[0].Created '（9/7: B）'
+    Assert-Equal 2 $rows[0].Open '（9/7 の終わり: A, B）'
+    Assert-Equal 1 $rows[0].Closed '（9/7: D の 23:59）'
+    Assert-Equal 1 $rows[1].Created '（9/8: C）'
+    Assert-Equal 1 $rows[1].Open '（9/8 の終わり: A）'
+    Assert-Equal 2 $rows[1].Closed '（9/8: B, C）'
+    Assert-Equal 1 $rows[2].Created '（9/9: E）'
+    Assert-Equal 2 $rows[2].Open '（9/9 の終わり: A, E）'
+    Assert-Equal 0 $rows[2].Closed '（E のクローズは 9/10 01:00）'
+    for ($i = 1; $i -lt $rows.Count; $i++) {
+        Assert-Equal ($rows[$i - 1].Open + $rows[$i].Created - $rows[$i].Closed) $rows[$i].Open '（滞留 = 前日の滞留 + 作成 - Close）'
+    }
+}
+It '日次の作成・滞留・Close: 複数リポジトリでは (ALL) の行が追加される' {
+    $config = New-TestConfig @{ FromDate = '2026-09-07'; ToDate = '2026-09-07'; Repositories = @('RepoA', 'RepoB') }
+    $range = Get-PrMetricsDateRange -Config $config -TimeZone $tokyo
+    $records = @(
+        ConvertTo-PrFlowRecord -PullRequest (New-FlowPr 1 '2026-09-01T00:00:00Z' -Status 'active') -Repository 'RepoA' -TimeZone $tokyo
+        ConvertTo-PrFlowRecord -PullRequest (New-FlowPr 2 '2026-09-07T01:00:00Z' -Status 'active') -Repository 'RepoB' -TimeZone $tokyo
+    )
+    $rows = @(Get-PrFlowDailySummary -Records $records -Config $config -Range $range)
+    Assert-Equal 3 $rows.Count
+    Assert-Equal '(ALL)' $rows[2].Repository
+    Assert-Equal 1 $rows[2].Created
+    Assert-Equal 2 $rows[2].Open
 }
 
 Write-Host '== Git 方式（実リポジトリ）'

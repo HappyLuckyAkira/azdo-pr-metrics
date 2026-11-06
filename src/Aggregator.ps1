@@ -7,6 +7,31 @@
 
 $script:AllRepositoriesLabel = '(ALL)'
 
+function Test-PullRequestFilterMatch {
+    <#
+    .SYNOPSIS
+        PR が期間以外の絞り込み（Draft・マージ先ブランチ・除外作成者）に合うか判定する。
+        期間の判定が要らない集計（作成・滞留・Close）でも同じ条件を使うため、Test-PullRequestIncluded から切り出している。
+    .OUTPUTS
+        合えば $true
+    #>
+    param(
+        [Parameter(Mandatory)]$PullRequest,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    if ($Config.ExcludeDrafts -and $PullRequest.PSObject.Properties['isDraft'] -and $PullRequest.isDraft) { return $false }
+
+    if ($Config.TargetBranches.Count -gt 0 -and $Config.TargetBranches -notcontains [string]$PullRequest.targetRefName) { return $false }
+
+    if ($Config.ExcludeAuthors.Count -gt 0 -and $null -ne $PullRequest.createdBy) {
+        foreach ($name in @([string]$PullRequest.createdBy.displayName, [string]$PullRequest.createdBy.uniqueName)) {
+            if ($name -and $Config.ExcludeAuthors -contains $name) { return $false }
+        }
+    }
+    return $true
+}
+
 function Test-PullRequestIncluded {
     <#
     .SYNOPSIS
@@ -24,16 +49,7 @@ function Test-PullRequestIncluded {
     if ($null -eq $basisUtc) { return $false }
     if ($basisUtc -lt $Range.FromUtc -or $basisUtc -ge $Range.ToUtcExclusive) { return $false }
 
-    if ($Config.ExcludeDrafts -and $PullRequest.PSObject.Properties['isDraft'] -and $PullRequest.isDraft) { return $false }
-
-    if ($Config.TargetBranches.Count -gt 0 -and $Config.TargetBranches -notcontains [string]$PullRequest.targetRefName) { return $false }
-
-    if ($Config.ExcludeAuthors.Count -gt 0 -and $null -ne $PullRequest.createdBy) {
-        foreach ($name in @([string]$PullRequest.createdBy.displayName, [string]$PullRequest.createdBy.uniqueName)) {
-            if ($name -and $Config.ExcludeAuthors -contains $name) { return $false }
-        }
-    }
-    return $true
+    return (Test-PullRequestFilterMatch -PullRequest $PullRequest -Config $Config)
 }
 
 function Get-PullRequestBasisDateUtc {
