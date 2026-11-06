@@ -227,7 +227,9 @@ try {
                     $flowRecord = ConvertTo-PrFlowRecord -PullRequest $pr -Repository $repo -TimeZone $timeZone
                     if ($null -ne $flowRecord) { $flowRecords.Add($flowRecord) }
                 }
-                Write-Log "[$repo] 作成・滞留・Close 用に $($flowRaw.Count) 件を取得"
+                $flowVerb = '取得'
+                if ($ReplayDir) { $flowVerb = '読み込み' }
+                Write-Log "[$repo] 作成・滞留・Close 用に $($flowRaw.Count) 件を$flowVerb"
             }
             catch {
                 $flowAvailable = $false
@@ -298,10 +300,17 @@ try {
             $leadTimeDaily = Get-LeadTimeDailySummary -Records $sortedRecords -Config $config -Range $range
             Export-PrMetricsCsv -Data $leadTimeWeekly -Path (Join-Path $outputDir 'summary_leadtime_weekly.csv')
             Export-PrMetricsCsv -Data $leadTimeDaily -Path (Join-Path $outputDir 'summary_leadtime_daily.csv')
+            # PR の作成・滞留・Close は追加機能なので、失敗しても既存のグラフ（leadtime_chart.html）は出力する
             $flowSummary = @()
             if ($flowAvailable) {
-                $flowSummary = @(Get-PrFlowDailySummary -Records $flowRecords.ToArray() -Config $config -Range $range)
-                Export-PrMetricsCsv -Data $flowSummary -Path (Join-Path $outputDir 'summary_pr_flow_daily.csv')
+                try {
+                    $flowSummary = @(Get-PrFlowDailySummary -Records $flowRecords.ToArray() -Config $config -Range $range)
+                    Export-PrMetricsCsv -Data $flowSummary -Path (Join-Path $outputDir 'summary_pr_flow_daily.csv')
+                }
+                catch {
+                    $flowSummary = @()
+                    Write-Warning "PR の作成・滞留・Close の集計・出力に失敗しました（他の出力には影響しません）: $($_.Exception.Message)"
+                }
             }
             $chartHtml = New-LeadTimeChartHtml -WeeklySummary $leadTimeWeekly -DailySummary $leadTimeDaily -Config $config -Range $range -FlowSummary $flowSummary
             Export-PrMetricsHtml -Html $chartHtml -Path (Join-Path $outputDir 'leadtime_chart.html')
